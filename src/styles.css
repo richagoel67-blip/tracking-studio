@@ -1,0 +1,271 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Design system definition — synced from Figma "Unified-design-systems"
+ * (node DesignSystem_BoltUpdate). Tokens: variables on selection via Figma MCP.
+ *
+ * Colors use oklch() with relative color syntax oklch(from #hex l c h) so values
+ * match Figma hex exactly in supporting browsers.
+ *
+ * Typography: SF Pro Display / SF Pro Text (system stack on Apple), IBM Plex Sans
+ * for compact heading style (loaded in __root.tsx).
+ */
+
+@theme inline {
+  --font-sans: var(--font-text-stack);
+  --font-display: var(--font-display-stack);
+  --font-compact-heading: var(--font-compact-heading-stack);
+
+  --text-heading-h1: 6rem;
+  --text-heading-h1--line-height: 7.25rem;
+  --text-heading-h2: 3.75rem;
+  --text-heading-h2--line-height: 4.5rem;
+  --text-heading-h3: 3rem;
+  --text-heading-h3--line-height: 3.75rem;
+  --text-heading-h4: 2rem;
+  --text-heading-h4--line-height: 3rem;
+  --text-heading-h5: 1.5rem;
+  --text-heading-h5--line-height: 2.25rem;
+  --text-heading-h6: 1.25rem;
+  --text-heading-h6--line-height: 1.75rem;
+  --text-subtitle-1: 1.125rem;
+  --text-subtitle-1--line-height: 1.75rem;
+  --text-subtitle-2: 1rem;
+  --text-subtitle-2--line-height: 1.5rem;
+  --text-body-1: 0.875rem;
+  --text-body-1--line-height: 1.25rem;
+  --text-body-2: 0.75rem;
+  --text-body-2--line-height: 1.125rem;
+  --text-caption: 0.625rem;
+  --text-caption--line-height: 1rem;
+  --text-overline: 0.5rem;
+  --text-overline--line-height: 0.75rem;
+  --text-heading-compact-02: 1rem;
+  --text-heading-compact-02--line-height: 1.375rem;
+
+  --spacing-figma-02: 0.125rem;
+  --spacing-figma-08: 0.5rem;
+  --spacing-figma-12: 0.75rem;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+  --radius-figma-none: 0;
+  --radius-figma-xs: 0.25rem;
+
+  --shadow-elevation-focused: var(--elevation-focused);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ring-offset-background: var(--background);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Figma palette (optional utilities: bg-figma-primary-main, etc.) */
+  --color-figma-primary-lighter: var(--figma-primary-lighter);
+  --color-figma-primary-light: var(--figma-primary-light);
+  --color-figma-primary-main: var(--figma-primary-main);
+  --color-figma-primary-dark: var(--figma-primary-dark);
+  --color-figma-primary-darker: var(--figma-primary-darker);
+  --color-figma-secondary-lighter: var(--figma-secondary-lighter);
+  --color-figma-secondary-light: var(--figma-secondary-light);
+  --color-figma-secondary-main: var(--figma-secondary-main);
+  --color-figma-secondary-dark: var(--figma-secondary-dark);
+  --color-figma-secondary-darker: var(--figma-secondary-darker);
+  --color-figma-success-main: var(--figma-success-main);
+  --color-figma-warning-main: var(--figma-warning-main);
+  --color-figma-info-main: var(--figma-info-main);
+  --color-canvas: var(--figma-canvas-bg);
+  --color-chart-bar: var(--figma-chart-bar-primary);
+  --color-chart-bar-muted: var(--figma-chart-bar-secondary);
+}
+
+:root {
+  --font-display-stack: "SF Pro Display", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-text-stack: "SF Pro Text", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-compact-heading-stack: "IBM Plex Sans", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+
+  /* Figma elevation/focused: drop shadow + 4px #EAE8F6 ring */
+  --elevation-focused: 0 1px 2px rgb(0 0 0 / 0.051), 0 0 0 4px #eae8f6;
+
+  --figma-primary-lighter: oklch(from #e8eaf6 l c h);
+  --figma-primary-light: oklch(from #c5cae9 l c h);
+  --figma-primary-main: oklch(from #303f9f l c h);
+  --figma-primary-dark: oklch(from #283593 l c h);
+  --figma-primary-darker: oklch(from #1a237e l c h);
+  --figma-secondary-lighter: oklch(from #e4e8ff l c h);
+  --figma-secondary-light: oklch(from #536dfe l c h);
+  --figma-secondary-main: oklch(from #3d5afe l c h);
+  --figma-secondary-dark: oklch(from #304ffe l c h);
+  --figma-secondary-darker: oklch(from #102dd1 l c h);
+  --figma-error-lighter: oklch(from #ffebee l c h);
+  --figma-error-light: oklch(from #ef9a9a l c h);
+  --figma-error-main: oklch(from #d32f2f l c h);
+  --figma-error-dark: oklch(from #c62828 l c h);
+  --figma-success-lighter: oklch(from #e8f5e9 l c h);
+  --figma-success-light: oklch(from #a5d6a7 l c h);
+  --figma-success-main: oklch(from #388e3c l c h);
+  --figma-success-dark: oklch(from #1b5e20 l c h);
+  --figma-info-lighter: oklch(from #e3f2fd l c h);
+  --figma-info-light: oklch(from #90caf9 l c h);
+  --figma-info-main: oklch(from #2196f3 l c h);
+  --figma-info-dark: oklch(from #1976d2 l c h);
+  --figma-warning-lighter: oklch(from #fff3e0 l c h);
+  --figma-warning-light: oklch(from #ffcc80 l c h);
+  --figma-warning-main: oklch(from #f57c00 l c h);
+  --figma-warning-dark: oklch(from #e65100 l c h);
+  --figma-neutral-white: oklch(from #ffffff l c h);
+  --figma-neutral-black: oklch(from #000000 l c h);
+  --figma-gray-text-01: oklch(from #cbd5e0 l c h);
+  --figma-gray-text-02: oklch(from #a0aec0 l c h);
+  --figma-gray-text-03: oklch(from #718096 l c h);
+  --figma-gray-text-04: oklch(from #3d4759 l c h);
+  --figma-gray-text-05: oklch(from #1a202c l c h);
+  --figma-gray-icon-03: oklch(from #a0aec0 l c h);
+  --figma-gray-icon-04: oklch(from #718096 l c h);
+  --figma-gray-border-01: oklch(from #f7fafc l c h);
+  --figma-gray-border-02: oklch(from #e2e8f0 l c h);
+  --figma-gray-border-03: oklch(from #cbd5e0 l c h);
+  --figma-gray-border-04: oklch(from #a0aec0 l c h);
+  --figma-gray-border-05: oklch(from #4a5568 l c h);
+  --figma-gray-bg-01: oklch(from #f7fafc l c h);
+  --figma-gray-bg-04: oklch(from #f4f5fb l c h);
+  --figma-gray-bg-05: oklch(from #e2e8f0 l c h);
+  --figma-surface-text-muted: oklch(from #768ea7 l c h);
+  --figma-surface-text-normal: oklch(from #192839 l c h);
+  --figma-surface-border-normal: oklch(from #90a5bb l c h);
+
+  /* Tracking-studio file (LzTvP4QxJv4Adw8HkzgauB) */
+  --figma-canvas-bg: oklch(from #f6f8f9 l c h);
+  --figma-gray-bg-03: oklch(from #eff3f8 l c h);
+  --figma-neutral-300: oklch(from #e2e6f1 l c h);
+  --figma-title-strong: oklch(from #252f3f l c h);
+  --figma-funnel-label: oklch(from #374151 l c h);
+  --figma-funnel-sub: oklch(from #7f7f7f l c h);
+  --figma-chart-bar-primary: oklch(from #525dc2 l c h);
+  --figma-chart-bar-secondary: oklch(from #59cee0 l c h);
+  --figma-chart-mid: oklch(from #7681e8 l c h);
+  --figma-chart-light: oklch(from #649ef5 l c h);
+  --figma-line-icon: oklch(from #ccd2e3 l c h);
+  --figma-on-primary-label: oklch(from #f6f8f9 l c h);
+
+  /* Base radius for shadcn-style components; Figma token radius/xs is --radius-figma-xs (4px). */
+  --radius: 0.5rem;
+  --background: var(--figma-neutral-white);
+  --foreground: var(--figma-gray-text-05);
+  --card: var(--figma-neutral-white);
+  --card-foreground: var(--figma-gray-text-05);
+  --popover: var(--figma-neutral-white);
+  --popover-foreground: var(--figma-gray-text-05);
+  --primary: var(--figma-primary-main);
+  --primary-foreground: var(--figma-neutral-white);
+  --secondary: var(--figma-secondary-main);
+  --secondary-foreground: var(--figma-neutral-white);
+  --muted: var(--figma-gray-bg-01);
+  --muted-foreground: var(--figma-gray-text-03);
+  --accent: var(--figma-primary-lighter);
+  --accent-foreground: var(--figma-primary-darker);
+  --destructive: var(--figma-error-main);
+  --destructive-foreground: var(--figma-neutral-white);
+  --border: var(--figma-gray-border-02);
+  --input: var(--figma-gray-border-02);
+  --ring: var(--figma-secondary-light);
+  --chart-1: var(--figma-primary-main);
+  --chart-2: var(--figma-secondary-main);
+  --chart-3: var(--figma-success-main);
+  --chart-4: var(--figma-warning-main);
+  --chart-5: var(--figma-info-main);
+  --sidebar: var(--figma-gray-bg-04);
+  --sidebar-foreground: var(--figma-gray-text-05);
+  --sidebar-primary: var(--figma-primary-main);
+  --sidebar-primary-foreground: var(--figma-neutral-white);
+  --sidebar-accent: var(--figma-gray-bg-01);
+  --sidebar-accent-foreground: var(--figma-gray-text-05);
+  --sidebar-border: var(--figma-gray-border-02);
+  --sidebar-ring: var(--figma-secondary-light);
+}
+
+.dark {
+  --elevation-focused: 0 1px 2px rgb(0 0 0 / 0.2), 0 0 0 4px rgb(48 63 159 / 0.35);
+
+  --background: var(--figma-gray-text-05);
+  --foreground: var(--figma-gray-border-01);
+  --card: var(--figma-gray-text-04);
+  --card-foreground: var(--figma-gray-border-01);
+  --popover: var(--figma-gray-text-04);
+  --popover-foreground: var(--figma-gray-border-01);
+  --primary: var(--figma-primary-light);
+  --primary-foreground: var(--figma-primary-darker);
+  --secondary: var(--figma-secondary-light);
+  --secondary-foreground: var(--figma-neutral-white);
+  --muted: oklch(from #3d4759 l c h);
+  --muted-foreground: var(--figma-gray-text-02);
+  --accent: oklch(from #283593 l c h);
+  --accent-foreground: var(--figma-gray-border-01);
+  --destructive: oklch(from #ef9a9a l c h);
+  --destructive-foreground: var(--figma-primary-darker);
+  --border: oklch(from #ffffff l c h / 0.12);
+  --input: oklch(from #ffffff l c h / 0.14);
+  --ring: var(--figma-secondary-light);
+  --chart-1: var(--figma-primary-light);
+  --chart-2: var(--figma-secondary-light);
+  --chart-3: var(--figma-success-light);
+  --chart-4: var(--figma-warning-light);
+  --chart-5: var(--figma-info-light);
+  --sidebar: var(--figma-gray-text-04);
+  --sidebar-foreground: var(--figma-gray-border-01);
+  --sidebar-primary: var(--figma-primary-light);
+  --sidebar-primary-foreground: var(--figma-primary-darker);
+  --sidebar-accent: oklch(from #3d4759 l c h);
+  --sidebar-accent-foreground: var(--figma-gray-border-01);
+  --sidebar-border: oklch(from #ffffff l c h / 0.1);
+  --sidebar-ring: var(--figma-secondary-light);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-text-stack);
+  }
+}
