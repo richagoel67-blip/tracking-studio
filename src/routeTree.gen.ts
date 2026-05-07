@@ -9,8 +9,38 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as TestModeRouteImport } from './routes/test-mode'
+import { Route as SnippetsRouteImport } from './routes/snippets'
+import { Route as InstallationGuideRouteImport } from './routes/installation-guide'
+import { Route as ConfigureRouteImport } from './routes/configure'
+import { Route as AlertsRouteImport } from './routes/alerts'
 import { Route as IndexRouteImport } from './routes/index'
 
+const TestModeRoute = TestModeRouteImport.update({
+  id: '/test-mode',
+  path: '/test-mode',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SnippetsRoute = SnippetsRouteImport.update({
+  id: '/snippets',
+  path: '/snippets',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const InstallationGuideRoute = InstallationGuideRouteImport.update({
+  id: '/installation-guide',
+  path: '/installation-guide',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ConfigureRoute = ConfigureRouteImport.update({
+  id: '/configure',
+  path: '/configure',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AlertsRoute = AlertsRouteImport.update({
+  id: '/alerts',
+  path: '/alerts',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -19,28 +49,102 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/alerts': typeof AlertsRoute
+  '/configure': typeof ConfigureRoute
+  '/installation-guide': typeof InstallationGuideRoute
+  '/snippets': typeof SnippetsRoute
+  '/test-mode': typeof TestModeRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/alerts': typeof AlertsRoute
+  '/configure': typeof ConfigureRoute
+  '/installation-guide': typeof InstallationGuideRoute
+  '/snippets': typeof SnippetsRoute
+  '/test-mode': typeof TestModeRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/alerts': typeof AlertsRoute
+  '/configure': typeof ConfigureRoute
+  '/installation-guide': typeof InstallationGuideRoute
+  '/snippets': typeof SnippetsRoute
+  '/test-mode': typeof TestModeRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths:
+    | '/'
+    | '/alerts'
+    | '/configure'
+    | '/installation-guide'
+    | '/snippets'
+    | '/test-mode'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to:
+    | '/'
+    | '/alerts'
+    | '/configure'
+    | '/installation-guide'
+    | '/snippets'
+    | '/test-mode'
+  id:
+    | '__root__'
+    | '/'
+    | '/alerts'
+    | '/configure'
+    | '/installation-guide'
+    | '/snippets'
+    | '/test-mode'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AlertsRoute: typeof AlertsRoute
+  ConfigureRoute: typeof ConfigureRoute
+  InstallationGuideRoute: typeof InstallationGuideRoute
+  SnippetsRoute: typeof SnippetsRoute
+  TestModeRoute: typeof TestModeRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/test-mode': {
+      id: '/test-mode'
+      path: '/test-mode'
+      fullPath: '/test-mode'
+      preLoaderRoute: typeof TestModeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/snippets': {
+      id: '/snippets'
+      path: '/snippets'
+      fullPath: '/snippets'
+      preLoaderRoute: typeof SnippetsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/installation-guide': {
+      id: '/installation-guide'
+      path: '/installation-guide'
+      fullPath: '/installation-guide'
+      preLoaderRoute: typeof InstallationGuideRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/configure': {
+      id: '/configure'
+      path: '/configure'
+      fullPath: '/configure'
+      preLoaderRoute: typeof ConfigureRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/alerts': {
+      id: '/alerts'
+      path: '/alerts'
+      fullPath: '/alerts'
+      preLoaderRoute: typeof AlertsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -53,6 +157,11 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AlertsRoute: AlertsRoute,
+  ConfigureRoute: ConfigureRoute,
+  InstallationGuideRoute: InstallationGuideRoute,
+  SnippetsRoute: SnippetsRoute,
+  TestModeRoute: TestModeRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

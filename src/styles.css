@@ -184,6 +184,13 @@
   --figma-chart-light: oklch(from #649ef5 l c h);
   --figma-line-icon: oklch(from #ccd2e3 l c h);
   --figma-on-primary-label: oklch(from #f6f8f9 l c h);
+  --figma-gray-bg-02: oklch(from #fcfdfe l c h);
+  --figma-code-panel-bg: oklch(from #1c2536 l c h);
+  --figma-install-heading: oklch(from #0f172b l c h);
+  --figma-code-text: oklch(from #f1f5f9 l c h);
+  --figma-syntax-tag: oklch(from #26c6da l c h);
+  --figma-syntax-string-warm: oklch(from #ffe082 l c h);
+  --figma-syntax-string-alt: oklch(from #fff59d l c h);
 
   /* Base radius for shadcn-style components; Figma token radius/xs is --radius-figma-xs (4px). */
   --radius: 0.5rem;
