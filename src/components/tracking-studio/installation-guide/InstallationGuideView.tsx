@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronRight, Copy, ExternalLink, Info, Mail } from "lucide-react";
+import { Check, ChevronRight, Copy, ExternalLink, Info, Mail, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -9,7 +9,40 @@ const FLOWS = [
   { id: 3 as const, label: "Flow 3", tag: "PIXEL" as const, description: "Job Ad click → ATS" },
 ];
 
+const ATS_CARDS = [
+  {
+    supportedTracking: ["IMAGE PIXEL", "JS PIXEL"],
+  },
+  {
+    supportedTracking: ["IMAGE PIXEL", "JS PIXEL", "S2S"],
+  },
+] as const;
+
 const PASTE_SEGMENTS = ["Administration", "Career site", "Footer script"];
+
+const ATS_MATRIX_ROWS = [
+  { page: "Carrer page", jsPixel: true, imagePixel: true, s2sPixel: false },
+  { page: "Apply page", jsPixel: true, imagePixel: true, s2sPixel: true },
+  { page: "Thank you page", jsPixel: false, imagePixel: true, s2sPixel: true },
+] as const;
+
+const PLACEMENT_INSTRUCTIONS = [
+  {
+    label: "VIEW",
+    className: "bg-[color:var(--figma-secondary-lighter)] text-[color:var(--figma-secondary-main)]",
+    detail: "Career Site Settings > Custom JavaScript",
+  },
+  {
+    label: "APPLY_START",
+    className: "bg-[color:var(--figma-warning-lighter)] text-[color:var(--figma-warning-main)]",
+    detail: "Career Site Settings > Custom JavaScript",
+  },
+  {
+    label: "APPLY_FINISH",
+    className: "bg-[color:var(--figma-success-lighter)] text-[color:var(--figma-success-main)]",
+    detail: "S2S via Symplr API webhooks",
+  },
+] as const;
 
 function CopySnippetButton({ text }: { text: string }) {
   return (
@@ -110,9 +143,261 @@ function PixelCodeSnippet({
   );
 }
 
+function WorkdayMark() {
+  return (
+    <div className="flex size-10 items-center justify-center rounded-full bg-white text-[32px] font-semibold leading-none text-[#0467ca]">
+      W
+    </div>
+  );
+}
+
+function SupportedTrackingChip({ label }: { label: string }) {
+  return (
+    <span className="inline-flex h-[26px] items-center gap-0.5 rounded-full bg-[color:var(--figma-gray-bg-03)] px-1.5 py-0.5 text-xs leading-[18px] text-[color:var(--figma-gray-text-03)]">
+      {label}
+      <Check className="size-4 text-[color:var(--figma-gray-icon-04)]" strokeWidth={2} />
+    </span>
+  );
+}
+
+function AtsSummaryCard({
+  supportedTracking,
+  onViewMore,
+}: {
+  supportedTracking: readonly string[];
+  onViewMore: () => void;
+}) {
+  return (
+    <article className="rounded-lg border border-border bg-white p-6">
+      <div className="flex flex-col gap-5">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-start gap-2">
+            <WorkdayMark />
+            <div className="flex min-w-0 flex-col gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-sm font-medium leading-5 text-[color:var(--figma-gray-text-05)]">Workday</p>
+                <span className="text-[10px] font-medium leading-4 text-[color:var(--figma-gray-text-03)]">1st</span>
+                <span className="rounded-full bg-[color:var(--figma-secondary-lighter)] px-1.5 py-0.5 text-[10px] font-medium leading-4 text-[color:var(--figma-secondary-main)]">
+                  v2.3
+                </span>
+                <span className="rounded-full bg-[color:var(--figma-success-lighter)] px-1.5 py-0.5 text-[10px] font-medium leading-4 text-[color:var(--figma-success-main)]">
+                  Ready to test
+                </span>
+              </div>
+              <p className="text-xs leading-[18px] text-[color:var(--figma-gray-text-03)]">Last updated 26 feb,2026</p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={onViewMore}
+            className="inline-flex h-7 items-center gap-1 self-start rounded-[4px] border border-primary bg-white px-3 py-1 text-xs font-medium leading-[18px] text-primary"
+          >
+            View more details
+            <ChevronRight className="size-3" strokeWidth={2} />
+          </button>
+        </div>
+
+        <div className="flex flex-wrap items-start gap-x-16 gap-y-4">
+          <div className="flex flex-col gap-0.5">
+            <p className="text-xs leading-[18px] text-[color:var(--figma-gray-text-03)]">setup effort</p>
+            <p className="text-sm font-medium leading-5 text-[color:var(--figma-gray-text-05)]">12 min</p>
+          </div>
+
+          <div className="flex flex-col gap-0.5">
+            <p className="text-xs leading-[18px] text-[color:var(--figma-gray-text-03)]">complexity</p>
+            <p className="text-sm font-medium leading-5 text-[color:var(--figma-warning-dark)]">moderate</p>
+          </div>
+
+          <div className="flex flex-col gap-0.5">
+            <p className="text-xs leading-[18px] text-[color:var(--figma-gray-text-03)]">guide owner</p>
+            <div className="flex items-center gap-1">
+              <span className="inline-flex size-6 items-center justify-center rounded-full bg-[color:var(--figma-primary-lighter)] text-[10px] font-semibold leading-4 text-primary">
+                KS
+              </span>
+              <span className="text-sm font-medium leading-5 text-[color:var(--figma-gray-text-05)]">Kevin Smith</span>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-0.5">
+            <p className="text-xs leading-[18px] text-[color:var(--figma-gray-text-03)]">open issues</p>
+            <p className="text-sm font-medium leading-5 text-[color:var(--figma-gray-text-05)]">1 issue</p>
+          </div>
+
+          <div className="flex flex-col gap-0.5">
+            <p className="text-xs leading-[18px] text-[color:var(--figma-gray-text-03)]">Supported tracking</p>
+            <div className="flex flex-wrap items-center gap-2">
+              {supportedTracking.map((item) => (
+                <SupportedTrackingChip key={item} label={item} />
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function MatrixStatus({ ok }: { ok: boolean }) {
+  return ok ? (
+    <Check className="size-5 text-[color:var(--figma-success-main)]" strokeWidth={2} />
+  ) : (
+    <X className="size-5 text-[color:var(--figma-error-main)]" strokeWidth={2} />
+  );
+}
+
+function AtsDetailsPanel({
+  open,
+  onClose,
+  supportedTracking,
+}: {
+  open: boolean;
+  onClose: () => void;
+  supportedTracking: readonly string[];
+}) {
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50">
+      <button type="button" aria-label="Close ATS details panel" className="absolute inset-0 bg-black/35" onClick={onClose} />
+      <aside className="absolute right-0 top-0 h-full w-[704px] max-w-[96vw] overflow-y-auto border-l border-border bg-white pb-6 pt-6">
+        <div className="flex flex-col gap-10 px-6">
+          <div className="flex flex-col gap-6">
+            <div className="flex items-start justify-between">
+              <div className="flex items-start gap-2">
+                <WorkdayMark />
+                <div className="flex min-w-0 flex-col gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-medium leading-5 text-[color:var(--figma-gray-text-05)]">Workday</p>
+                    <span className="text-[10px] font-medium leading-4 text-[color:var(--figma-gray-text-03)]">1st</span>
+                    <span className="rounded-full bg-[color:var(--figma-secondary-lighter)] px-1.5 py-0.5 text-[10px] font-medium leading-4 text-[color:var(--figma-secondary-main)]">
+                      v2.3
+                    </span>
+                    <span className="rounded-full bg-[color:var(--figma-success-lighter)] px-1.5 py-0.5 text-[10px] font-medium leading-4 text-[color:var(--figma-success-main)]">
+                      Ready to test
+                    </span>
+                  </div>
+                  <p className="text-xs leading-[18px] text-[color:var(--figma-gray-text-03)]">Last updated 26 feb,2026</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                aria-label="Close details panel"
+                onClick={onClose}
+                className="rounded-sm p-0.5 text-[color:var(--figma-gray-icon-04)] hover:bg-[color:var(--figma-gray-bg-03)]"
+              >
+                <X className="size-6" strokeWidth={2} />
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-start gap-x-16 gap-y-4">
+              <div className="flex flex-col gap-0.5">
+                <p className="text-xs leading-[18px] text-[color:var(--figma-gray-text-03)]">setup effort</p>
+                <p className="text-sm font-medium leading-5 text-[color:var(--figma-gray-text-05)]">12 min</p>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <p className="text-xs leading-[18px] text-[color:var(--figma-gray-text-03)]">complexity</p>
+                <p className="text-sm font-medium leading-5 text-[color:var(--figma-warning-dark)]">moderate</p>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <p className="text-xs leading-[18px] text-[color:var(--figma-gray-text-03)]">guide owner</p>
+                <div className="flex items-center gap-1">
+                  <span className="inline-flex size-6 items-center justify-center rounded-full bg-[color:var(--figma-primary-lighter)] text-[10px] font-semibold leading-4 text-primary">
+                    KS
+                  </span>
+                  <span className="text-sm font-medium leading-5 text-[color:var(--figma-gray-text-05)]">Kevin Smith</span>
+                </div>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <p className="text-xs leading-[18px] text-[color:var(--figma-gray-text-03)]">open issues</p>
+                <p className="text-sm font-medium leading-5 text-[color:var(--figma-gray-text-05)]">1 issue</p>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <p className="text-xs leading-[18px] text-[color:var(--figma-gray-text-03)]">Supported tracking</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  {supportedTracking.map((item) => (
+                    <SupportedTrackingChip key={item} label={item} />
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-6">
+            <div className="flex flex-col gap-2">
+              <p className="text-xs font-medium leading-[18px] text-[color:var(--figma-gray-text-05)]">Pixel support matrix</p>
+              <div className="overflow-hidden rounded-lg border border-border">
+                <div className="grid grid-cols-[1.5fr_repeat(3,minmax(0,1fr))] border-b border-border bg-white">
+                  <p className="px-6 py-4 text-sm font-semibold leading-5 text-[#6b7280]">Page</p>
+                  <p className="px-6 py-4 text-sm font-semibold leading-5 text-[#6b7280]">JS Pixel</p>
+                  <p className="px-6 py-4 text-sm font-semibold leading-5 text-[#6b7280]">Image Pixel</p>
+                  <p className="px-6 py-4 text-sm font-semibold leading-5 text-[#6b7280]">S2S Pixel</p>
+                </div>
+                {ATS_MATRIX_ROWS.map((row) => (
+                  <div key={row.page} className="grid grid-cols-[1.5fr_repeat(3,minmax(0,1fr))] border-b border-border last:border-b-0">
+                    <p className="px-6 py-4 text-sm leading-5 text-[#374151]">{row.page}</p>
+                    <div className="flex items-center justify-center px-6 py-4">
+                      <MatrixStatus ok={row.jsPixel} />
+                    </div>
+                    <div className="flex items-center justify-center px-6 py-4">
+                      <MatrixStatus ok={row.imagePixel} />
+                    </div>
+                    <div className="flex items-center justify-center px-6 py-4">
+                      <MatrixStatus ok={row.s2sPixel} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <p className="text-xs font-medium leading-[18px] text-[color:var(--figma-gray-text-04)]">Placement instructions</p>
+              <div className="flex flex-col gap-3">
+                {PLACEMENT_INSTRUCTIONS.map((item) => (
+                  <div key={item.label} className="flex items-center gap-3 text-xs leading-[18px]">
+                    <span className={cn("rounded-full px-2 py-1 text-xs font-medium leading-[18px]", item.className)}>{item.label}</span>
+                    <span className="text-[color:var(--figma-gray-text-03)]">{item.detail}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <p className="text-xs font-medium leading-[18px] text-[color:var(--figma-gray-text-04)]">Expected URL Patterns</p>
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="rounded border border-border bg-[color:var(--figma-gray-bg-03)] px-2 py-1 text-sm leading-5 text-[color:var(--figma-gray-text-05)]">
+                  *.myworkdayjobs.com/*
+                </span>
+                <span className="rounded border border-border bg-[color:var(--figma-gray-bg-03)] px-2 py-1 text-sm leading-5 text-[color:var(--figma-gray-text-04)]">
+                  *.wd5.myworkdayjobs.com/*
+                </span>
+              </div>
+            </div>
+
+            <div className="rounded-[4px] border border-[color:var(--figma-info-light)] bg-[color:var(--figma-info-lighter)] p-4">
+              <div className="flex items-start gap-3">
+                <span className="inline-flex size-5 items-center justify-center rounded-full bg-[color:var(--figma-info-main)] text-white">
+                  <Info className="size-3.5" strokeWidth={2.2} />
+                </span>
+                <div className="space-y-1">
+                  <p className="text-sm font-medium leading-5 text-[color:var(--figma-gray-text-05)]">URL Parameter Behavior</p>
+                  <p className="text-sm leading-5 text-[color:var(--figma-gray-text-04)]">
+                    Parameters must be explicitly enabled in Workday career site settings. Default behavior strips query strings on redirect.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  );
+}
+
 export function InstallationGuideView() {
   const [tab, setTab] = useState<"pixel" | "ats" | "steps">("pixel");
   const [flowId, setFlowId] = useState<(typeof FLOWS)[number]["id"]>(1);
+  const [selectedAtsIndex, setSelectedAtsIndex] = useState<number | null>(null);
 
   return (
     <div className="mx-auto flex max-w-[1136px] flex-col gap-5">
@@ -144,6 +429,18 @@ export function InstallationGuideView() {
       <div className="flex gap-8 border-b border-border">
         <button
           type="button"
+          onClick={() => setTab("steps")}
+          className={cn(
+            "-mb-px border-b-2 pb-3 text-sm leading-5 transition-colors",
+            tab === "steps"
+              ? "border-primary font-semibold text-primary"
+              : "border-transparent font-normal text-[color:var(--figma-gray-text-04)] hover:text-foreground",
+          )}
+        >
+          Validate steps
+        </button>
+        <button
+          type="button"
           onClick={() => setTab("pixel")}
           className={cn(
             "-mb-px border-b-2 pb-3 text-sm leading-5 transition-colors",
@@ -152,7 +449,7 @@ export function InstallationGuideView() {
               : "border-transparent font-normal text-[color:var(--figma-gray-text-04)] hover:text-foreground",
           )}
         >
-          Pixel Installation guide
+          Pixel installation guide
         </button>
         <button
           type="button"
@@ -166,25 +463,9 @@ export function InstallationGuideView() {
         >
           Selected ATS(2)
         </button>
-        <button
-          type="button"
-          onClick={() => setTab("steps")}
-          className={cn(
-            "-mb-px border-b-2 pb-3 text-sm leading-5 transition-colors",
-            tab === "steps"
-              ? "border-primary font-semibold text-primary"
-              : "border-transparent font-normal text-[color:var(--figma-gray-text-04)] hover:text-foreground",
-          )}
-        >
-          Steps
-        </button>
       </div>
 
-      {tab !== "pixel" ? (
-        <div className="rounded-lg border border-border bg-white p-8 text-sm text-[color:var(--figma-gray-text-03)]">
-          {tab === "ats" ? "Selected ATS content coming soon." : "Steps content coming soon."}
-        </div>
-      ) : (
+      {tab === "pixel" ? (
         <div className="flex flex-col gap-5 lg:flex-row lg:items-start">
           <div className="flex w-full shrink-0 flex-col gap-5 rounded-lg border border-border bg-white p-4 lg:w-80">
             <div>
@@ -213,8 +494,7 @@ export function InstallationGuideView() {
                           "rounded border px-2 py-0.5 text-xs leading-[18px] text-[color:var(--figma-gray-text-04)]",
                           selected && flow.tag === "PIXEL" && "border-[color:var(--figma-gray-border-03)] bg-[color:var(--figma-gray-bg-02)]",
                           selected && flow.tag === "S2S" && "border-[color:var(--figma-gray-border-03)] bg-[color:var(--figma-gray-bg-01)]",
-                          !selected && flow.tag === "PIXEL" && "border-[color:var(--figma-gray-border-03)] bg-[color:var(--figma-gray-bg-01)]",
-                          !selected && flow.tag === "S2S" && "border-[color:var(--figma-gray-border-03)] bg-[color:var(--figma-gray-bg-01)]",
+                          !selected && "border-[color:var(--figma-gray-border-03)] bg-[color:var(--figma-gray-bg-01)]",
                         )}
                       >
                         {flow.tag}
@@ -277,7 +557,26 @@ export function InstallationGuideView() {
             </section>
           </div>
         </div>
+      ) : tab === "ats" ? (
+        <div className="flex flex-col gap-5">
+          {ATS_CARDS.map((card, index) => (
+            <AtsSummaryCard
+              key={index}
+              supportedTracking={card.supportedTracking}
+              onViewMore={() => setSelectedAtsIndex(index)}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="rounded-lg border border-border bg-white p-8 text-sm text-[color:var(--figma-gray-text-03)]">
+          Validate steps content coming soon.
+        </div>
       )}
+      <AtsDetailsPanel
+        open={selectedAtsIndex !== null}
+        onClose={() => setSelectedAtsIndex(null)}
+        supportedTracking={selectedAtsIndex !== null ? ATS_CARDS[selectedAtsIndex].supportedTracking : []}
+      />
     </div>
   );
 }
