@@ -43,18 +43,20 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  SearchableDropdown,
+  type SearchableDropdownOption,
+} from "@/components/ui/searchable-dropdown";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
-import { AtsEventsSection, CareerSiteEventsSection } from "./configure-event-forms";
+import {
+  AtsEventsSection,
+  CareerSiteEventsSection,
+  TrackingConfigurationPixelGuidance,
+} from "./configure-event-forms";
+import { deriveTrackingPattern } from "./derive-tracking-pattern";
 import {
   countCustomEventsDefined,
   countEnabledCustomEventsGlobally,
@@ -83,13 +85,16 @@ import {
 import { buildSetupDiffLines } from "./tracking-setup-diff";
 import {
   type Architecture,
+  atsLimitPerFlow,
   clearDraft,
+  clearLive,
   cloneSnapshot,
   loadDraft,
   loadLive,
   loadMode,
   saveDraft as persistDraft,
   saveLive,
+  saveMode,
   type FlowState,
   type Selection,
   type SetupSnapshot,
@@ -97,6 +102,15 @@ import {
 } from "./tracking-setup-storage";
 
 const ATS_OPTIONS = ["Workday", "JobInvite", "Bullhorn", "BambooHR", "Avionte"] as const;
+
+/** Pixel tracking: recommended event firing method shown next to each ATS in the vendor dropdown. */
+const ATS_VENDOR_PIXEL_METHOD_TAG: Record<(typeof ATS_OPTIONS)[number], string> = {
+  Workday: "JS recommended",
+  JobInvite: "Image recommended",
+  Bullhorn: "JS recommended",
+  BambooHR: "JS recommended",
+  Avionte: "Image recommended",
+};
 
 const STEPPER_STEPS = [
   { title: "Select architecture", subtitle: "tracking method" },
@@ -221,7 +235,7 @@ function AddAtsToFlowControl({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-72 p-2">
-        <FlowCatalogDropdownInfoBanner message="Maximum 2 ATS allowed. You can reuse an existing ATS added in the flow." />
+        <FlowCatalogDropdownInfoBanner message="Each flow can include one ATS. Reuse an existing ATS template from the list when your catalog is full." />
         <DropdownMenuSeparator />
         {canCreateNewTemplate ? (
           <DropdownMenuItem
@@ -420,15 +434,20 @@ function flowTrackingNodeCount(f: FlowState): number {
   return (f.careerSiteId ? 1 : 0) + (f.atsIds.length > 0 ? 1 : 0);
 }
 
-function flowPathSummaryLine(flow: FlowState, career: CareerSiteState | null): string | null {
+function flowPathSummaryLine(
+  flow: FlowState,
+  career: CareerSiteState | null,
+  atsById: Record<string, AtsState>,
+): string | null {
   const cname = career ? career.name.trim() || "Career site" : "";
-  const atsCount = flow.atsIds.length;
-  if (career && atsCount === 0) return cname;
-  if (career && atsCount === 1) return `${cname} → 1 ATS`;
-  if (career && atsCount === 2) return `${cname} → 2 ATSes`;
-  if (!career && atsCount === 1) return "1 ATS";
-  if (!career && atsCount === 2) return "2 ATSes";
-  return null;
+  const ids = flow.atsIds;
+  if (ids.length === 0) {
+    return career ? cname : null;
+  }
+  const first = atsById[ids[0]!];
+  const vendor = first?.vendor.trim() || "ATS";
+  if (career) return `${cname} → ${vendor}`;
+  return vendor;
 }
 
 function architectureLabel(a: Architecture): string {
@@ -662,7 +681,7 @@ function ReviewTrackingStage({
             {flows.map((flow) => {
               const career = flow.careerSiteId ? (careerSiteById[flow.careerSiteId] ?? null) : null;
               const ready = isFlowReviewReady(flow, careerSiteById, atsById, architecture);
-              const pathLine = flowPathSummaryLine(flow, career);
+              const pathLine = flowPathSummaryLine(flow, career, atsById);
               return (
                 <div
                   key={flow.id}
@@ -785,11 +804,41 @@ function ReviewTrackingStage({
                                         ({ev.eventKey})
                                       </span>
                                     </div>
-                                    <div className="text-[color:var(--figma-gray-text-04)]">
-                                      URL: {ev.url || "—"}
-                                    </div>
-                                    <div className="text-[color:var(--figma-gray-text-04)]">
-                                      Method: {ev.trackingMethod}
+                                    <div className="space-y-1 text-[color:var(--figma-gray-text-04)]">
+                                      <div>
+                                        <span className="font-medium text-[color:var(--figma-gray-text-05)]">
+                                          Event name:{" "}
+                                        </span>
+                                        {ev.label}
+                                      </div>
+                                      <div>
+                                        <span className="font-medium text-[color:var(--figma-gray-text-05)]">
+                                          Event token:{" "}
+                                        </span>
+                                        {ev.eventKey}
+                                      </div>
+                                      <div>
+                                        <span className="font-medium text-[color:var(--figma-gray-text-05)]">
+                                          Pixel method:{" "}
+                                        </span>
+                                        {ev.trackingMethod}
+                                      </div>
+                                      <div>
+                                        <span className="font-medium text-[color:var(--figma-gray-text-05)]">
+                                          Exact event URL:{" "}
+                                        </span>
+                                        {ev.url.trim() || "—"}
+                                      </div>
+                                      <div>
+                                        <span className="font-medium text-[color:var(--figma-gray-text-05)]">
+                                          Generated tracking pattern:{" "}
+                                        </span>
+                                        {(() => {
+                                          const d = deriveTrackingPattern(ev.url, career.baseUrl);
+                                          if (!ev.url.trim() || !d.valid) return "—";
+                                          return d.generatedPattern;
+                                        })()}
+                                      </div>
                                     </div>
                                     <div
                                       className={
@@ -920,11 +969,44 @@ function ReviewTrackingStage({
                                             ({ev.eventKey})
                                           </span>
                                         </div>
-                                        <div className="text-[color:var(--figma-gray-text-04)]">
-                                          URL: {ev.url || "—"}
-                                        </div>
-                                        <div className="text-[color:var(--figma-gray-text-04)]">
-                                          Method: {ev.trackingMethod}
+                                        <div className="space-y-1 text-[color:var(--figma-gray-text-04)]">
+                                          <div>
+                                            <span className="font-medium text-[color:var(--figma-gray-text-05)]">
+                                              Event name:{" "}
+                                            </span>
+                                            {ev.label}
+                                          </div>
+                                          <div>
+                                            <span className="font-medium text-[color:var(--figma-gray-text-05)]">
+                                              Event token:{" "}
+                                            </span>
+                                            {ev.eventKey}
+                                          </div>
+                                          <div>
+                                            <span className="font-medium text-[color:var(--figma-gray-text-05)]">
+                                              Pixel method:{" "}
+                                            </span>
+                                            {ev.trackingMethod}
+                                          </div>
+                                          <div>
+                                            <span className="font-medium text-[color:var(--figma-gray-text-05)]">
+                                              Exact event URL:{" "}
+                                            </span>
+                                            {ev.url.trim() || "—"}
+                                          </div>
+                                          <div>
+                                            <span className="font-medium text-[color:var(--figma-gray-text-05)]">
+                                              Generated tracking pattern:{" "}
+                                            </span>
+                                            {(() => {
+                                              const d = deriveTrackingPattern(
+                                                ev.url,
+                                                a.endpointUrl,
+                                              );
+                                              if (!ev.url.trim() || !d.valid) return "—";
+                                              return d.generatedPattern;
+                                            })()}
+                                          </div>
                                         </div>
                                         <div
                                           className={
@@ -1222,6 +1304,7 @@ export function ConfigureTrackingSetup({
   const [liveSnapshot, setLiveSnapshot] = React.useState<SetupSnapshot | null>(null);
   const [workingCopy, setWorkingCopy] = React.useState<SetupSnapshot | null>(null);
   const [discardDraftOpen, setDiscardDraftOpen] = React.useState(false);
+  const [newClientSetupOpen, setNewClientSetupOpen] = React.useState(false);
   const [cancelLiveEditOpen, setCancelLiveEditOpen] = React.useState(false);
   const [lastDraftSavedLabel, setLastDraftSavedLabel] = React.useState<string | null>(null);
   const hydratedRef = React.useRef(false);
@@ -1463,8 +1546,8 @@ export function ConfigureTrackingSetup({
   const createNewAtsForFlow = (flowId: string) => {
     const flow = flows.find((f) => f.id === flowId);
     if (!flow) return;
-    if (flow.atsIds.length >= 2) {
-      toast.message("Maximum 2 ATSs per flow.");
+    if (flow.atsIds.length >= atsLimitPerFlow) {
+      toast.message("Only one ATS can be added per flow.");
       return;
     }
     if (Object.keys(atsById).length >= 2) {
@@ -1482,7 +1565,7 @@ export function ConfigureTrackingSetup({
   const confirmReuseAts = (flowId: string, catalogId: string) => {
     const flow = flows.find((f) => f.id === flowId);
     if (!flow || !atsById[catalogId] || flow.atsIds.includes(catalogId)) return;
-    if (flow.atsIds.length >= 2) return;
+    if (flow.atsIds.length >= atsLimitPerFlow) return;
     updateFlow(flowId, (f) => ({ ...f, atsIds: [...f.atsIds, catalogId] }));
     setSelection({ kind: "ats", flowId, atsId: catalogId });
     toast.message("ATS attached to this flow.");
@@ -1588,6 +1671,27 @@ export function ConfigureTrackingSetup({
     setLifecycleMode("wizard");
     setLastDraftSavedLabel(null);
     toast.message("Draft discarded.");
+  };
+
+  const confirmStartNewClientSetup = () => {
+    setNewClientSetupOpen(false);
+    clearDraft();
+    clearLive();
+    saveMode({ mode: "firstTime" });
+    setArchitecture("pixel");
+    setFlows(initialFlows());
+    setCareerSiteById({});
+    setAtsById({});
+    setCareerSiteSerial(1);
+    setSelection(null);
+    setDirty(false);
+    setStage(1);
+    setLifecycleMode("wizard");
+    setLiveSnapshot(null);
+    setWorkingCopy(null);
+    setLastDraftSavedLabel(null);
+    setFlowCanvasScale(1);
+    toast.success("New client setup started.");
   };
 
   const confirmCancelLiveEdit = () => {
@@ -1944,21 +2048,9 @@ export function ConfigureTrackingSetup({
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={() => {
-                      void navigate({ to: "/test-mode" });
-                    }}
+                    onClick={() => setNewClientSetupOpen(true)}
                   >
-                    Run tests
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      void navigate({ to: "/installation-guide" });
-                    }}
-                  >
-                    View guide
+                    New client setup
                   </Button>
                   <Button type="button" variant="outline" size="sm" onClick={requestExit}>
                     Exit
@@ -2263,6 +2355,27 @@ export function ConfigureTrackingSetup({
           </AlertDialogContent>
         </AlertDialog>
 
+        <AlertDialog open={newClientSetupOpen} onOpenChange={setNewClientSetupOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Start a new client setup?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This clears the published live setup and any saved draft in this browser, then
+                returns you to the first step for a new client. This cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-[color:var(--figma-error-main)] text-white hover:bg-[color:var(--figma-error-main)]/90"
+                onClick={confirmStartNewClientSetup}
+              >
+                Start new client setup
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
         <AlertDialog open={cancelLiveEditOpen} onOpenChange={setCancelLiveEditOpen}>
           <AlertDialogContent>
             <AlertDialogHeader>
@@ -2549,7 +2662,7 @@ function FlowAtsRow({
           </button>
         );
       })}
-      {atsCards.length < 2 ? (
+      {atsCards.length < atsLimitPerFlow ? (
         <AddAtsToFlowControl
           readOnly={readOnly}
           canCreateNewTemplate={canCreateNewAtsTemplate}
@@ -2623,18 +2736,15 @@ function FlowCanvasColumn({
   const nodeLabel = n === 1 ? "1 node" : `${n} nodes`;
   const cname = career ? career.name.trim() || "Career site" : "";
   const atsCount = flow.atsIds.length;
+  const firstVendor = (atsCards[0]?.ats.vendor ?? "").trim() || "ATS";
   const flowSummaryLine =
     career && atsCount === 0
       ? cname
-      : career && atsCount === 1
-        ? `${cname} → 1 ATS`
-        : career && atsCount === 2
-          ? `${cname} → 2 ATSes`
-          : !career && atsCount === 1
-            ? "1 ATS"
-            : !career && atsCount === 2
-              ? "2 ATSes"
-              : null;
+      : career && atsCount >= 1
+        ? `${cname} → ${firstVendor}`
+        : !career && atsCount >= 1
+          ? firstVendor
+          : null;
 
   return (
     <div className="flex w-max min-w-[248px] shrink-0 flex-col items-center gap-2">
@@ -2685,12 +2795,7 @@ function FlowCanvasColumn({
                   <CopyPlus className="size-3.5" strokeWidth={2} />
                 </button>
               </TooltipTrigger>
-              <TooltipContent
-                side="top"
-                className="animate-none border border-[color:var(--figma-gray-border-02)] bg-background/[0.06] text-[color:var(--figma-gray-text-05)] shadow-md backdrop-blur-sm"
-              >
-                Duplicate flow
-              </TooltipContent>
+              <TooltipContent side="top">Duplicate flow</TooltipContent>
             </Tooltip>
             <button
               type="button"
@@ -2906,12 +3011,7 @@ function FlowSettingsPanel({
                 <CopyPlus className="size-4" strokeWidth={2} />
               </Button>
             </TooltipTrigger>
-            <TooltipContent
-              side="bottom"
-              className="animate-none border border-[color:var(--figma-gray-border-02)] bg-background/[0.06] text-[color:var(--figma-gray-text-05)] shadow-md backdrop-blur-sm"
-            >
-              Duplicate flow
-            </TooltipContent>
+            <TooltipContent side="bottom">Duplicate flow</TooltipContent>
           </Tooltip>
           <Button
             type="button"
@@ -3090,12 +3190,19 @@ function CareerSitePanel({
         />
       </div>
       <Separator />
+      <div className="flex flex-col gap-1">
+        <h3 className="text-sm font-semibold text-[color:var(--figma-gray-text-05)]">
+          Tracking configuration
+        </h3>
+        {architecture === "pixel" ? <TrackingConfigurationPixelGuidance /> : null}
+      </div>
       <CareerSiteEventsSection
         events={career.events}
         architecture={architecture}
         readOnly={readOnly}
         globalCustomCount={globalCustomCount}
         onReplaceEvents={(events) => onChange({ events })}
+        pixelUrlResolveBase={career.baseUrl.trim() || undefined}
       />
     </div>
   );
@@ -3128,6 +3235,25 @@ function AtsConfigurationPanel({
     () => ATS_OPTIONS.filter((opt) => opt === ats.vendor || !vendorsTakenElsewhere.has(opt)),
     [ats.vendor, vendorsTakenElsewhere],
   );
+  const atsVendorDropdownOptions = React.useMemo((): SearchableDropdownOption[] => {
+    return vendorSelectOptions.map((opt) => {
+      const base: SearchableDropdownOption = { value: opt, label: opt };
+      if (architecture === "pixel") {
+        return {
+          ...base,
+          tag: ATS_VENDOR_PIXEL_METHOD_TAG[opt as (typeof ATS_OPTIONS)[number]],
+        };
+      }
+      return base;
+    });
+  }, [vendorSelectOptions, architecture]);
+  const s2sEventSourceDropdownOptions = React.useMemo((): SearchableDropdownOption[] => {
+    return S2S_EVENT_SOURCE_OPTIONS.map((o) => ({
+      value: o.value,
+      label: o.label,
+      keywords: [o.value, o.label],
+    }));
+  }, []);
   const globalCustomCount = countGlobalCustomEvents(careerSiteById, atsById);
   const testTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -3169,49 +3295,30 @@ function AtsConfigurationPanel({
           <Label htmlFor="ats-vendor-select-s2s">
             ATS name <span className="text-[color:var(--figma-error-main)]">*</span>
           </Label>
-          <Select
+          <SearchableDropdown
+            id="ats-vendor-select-s2s"
+            options={atsVendorDropdownOptions}
             value={ats.vendor}
             onValueChange={(v) => onChange({ vendor: v })}
             disabled={readOnly}
-          >
-            <SelectTrigger id="ats-vendor-select-s2s" className="w-full">
-              <SelectValue placeholder="Select ATS" />
-            </SelectTrigger>
-            <SelectContent>
-              {vendorSelectOptions.map((opt) => (
-                <SelectItem key={opt} value={opt}>
-                  {opt}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            placeholder="Select ATS"
+            searchPlaceholder="Search"
+          />
         </div>
         <div className="space-y-2">
           <Label htmlFor="ats-s2s-source">
             Event source <span className="text-[color:var(--figma-error-main)]">*</span>
           </Label>
-          <Select
-            value={ats.s2sEventSource ? ats.s2sEventSource : undefined}
+          <SearchableDropdown
+            id="ats-s2s-source"
+            options={s2sEventSourceDropdownOptions}
+            value={ats.s2sEventSource || undefined}
             onValueChange={(v) => onChange({ s2sEventSource: v as S2sEventSource })}
             disabled={readOnly}
-          >
-            <SelectTrigger
-              id="ats-s2s-source"
-              className={cn(
-                "w-full",
-                !ats.s2sEventSource && "border-[color:var(--figma-error-main)]",
-              )}
-            >
-              <SelectValue placeholder="Select event source" />
-            </SelectTrigger>
-            <SelectContent>
-              {S2S_EVENT_SOURCE_OPTIONS.map((o) => (
-                <SelectItem key={o.value} value={o.value}>
-                  {o.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            placeholder="Select event source"
+            searchPlaceholder="Search"
+            triggerClassName={cn(!ats.s2sEventSource && "border-[color:var(--figma-error-main)]")}
+          />
         </div>
         <div className="space-y-2">
           <Label htmlFor="ats-endpoint-s2s">
@@ -3276,22 +3383,15 @@ function AtsConfigurationPanel({
         <Label htmlFor="ats-vendor-select">
           Select ATS <span className="text-[color:var(--figma-error-main)]">*</span>
         </Label>
-        <Select
+        <SearchableDropdown
+          id="ats-vendor-select"
+          options={atsVendorDropdownOptions}
           value={ats.vendor}
           onValueChange={(v) => onChange({ vendor: v })}
           disabled={readOnly}
-        >
-          <SelectTrigger id="ats-vendor-select" className="w-full">
-            <SelectValue placeholder="Select ATS" />
-          </SelectTrigger>
-          <SelectContent>
-            {vendorSelectOptions.map((opt) => (
-              <SelectItem key={opt} value={opt}>
-                {opt}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          placeholder="Select ATS"
+          searchPlaceholder="Search"
+        />
       </div>
       <div className="space-y-2">
         <Label htmlFor="ats-endpoint">
@@ -3307,12 +3407,19 @@ function AtsConfigurationPanel({
         />
       </div>
       <Separator />
+      <div className="flex flex-col gap-1">
+        <h3 className="text-sm font-semibold text-[color:var(--figma-gray-text-05)]">
+          Tracking configuration
+        </h3>
+        {architecture === "pixel" ? <TrackingConfigurationPixelGuidance /> : null}
+      </div>
       <AtsEventsSection
         events={ats.events}
         architecture={architecture}
         readOnly={readOnly}
         globalCustomCount={globalCustomCount}
         onReplaceEvents={(events) => onChange({ events })}
+        pixelUrlResolveBase={ats.endpointUrl.trim() || undefined}
       />
     </div>
   );

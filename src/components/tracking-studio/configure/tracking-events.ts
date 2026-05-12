@@ -88,12 +88,12 @@ function defaultEvent(
   };
 }
 
-/** Career site defaults: VIEW on with a starter URL (matches prior emptyCareerSite). */
+/** Career site defaults: VIEW on; exact event URL is entered in the UI (no preset value). */
 export function createDefaultCareerEvents(): TrackingEvent[] {
   return [
     defaultEvent("view", "View", "VIEW", {
       enabled: true,
-      url: "/jobs/apply",
+      url: "",
       trackingMethod: "js",
     }),
     defaultEvent("lead", "Lead", "LEAD"),
@@ -203,7 +203,7 @@ export function migrateLegacyCareer(raw: LegacyCareer): CareerSiteState {
   set("view", {
     enabled: !!raw.viewOn,
     trackingMethod: raw.viewMethod ?? "js",
-    url: firstUrl(raw.viewUrls) || (raw.viewOn ? "/jobs/apply" : ""),
+    url: firstUrl(raw.viewUrls) || "",
   });
   set("lead", { enabled: false, url: "", trackingMethod: "image" });
   set("apply_start", {

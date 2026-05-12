@@ -19,6 +19,9 @@ export type FlowState = {
   atsIds: string[];
 };
 
+/** Maximum ATS catalog nodes that may be attached to a single flow. */
+export const atsLimitPerFlow = 1;
+
 export type Selection =
   | { kind: "flow"; flowId: string }
   | { kind: "career"; flowId: string }
@@ -63,6 +66,28 @@ function safeParse<T>(raw: string | null): T | null {
   }
 }
 
+function sanitizeSelection(
+  sel: SetupSnapshot["selection"],
+  snap: SetupSnapshot,
+): SetupSnapshot["selection"] {
+  if (!sel) return null;
+  const flow = snap.flows.find((f) => f.id === sel.flowId);
+  if (!flow) {
+    return snap.flows[0] ? { kind: "flow", flowId: snap.flows[0].id } : null;
+  }
+  if (sel.kind === "ats") {
+    if (!flow.atsIds.includes(sel.atsId) || !snap.atsById[sel.atsId]) {
+      return { kind: "flow", flowId: flow.id };
+    }
+  }
+  if (sel.kind === "career") {
+    if (!flow.careerSiteId || !snap.careerSiteById[flow.careerSiteId]) {
+      return { kind: "flow", flowId: flow.id };
+    }
+  }
+  return sel;
+}
+
 function migrateSnapshot(s: SetupSnapshot): SetupSnapshot {
   const careerSiteById = Object.fromEntries(
     Object.entries(s.careerSiteById ?? {}).map(([k, cs]) => [k, migrateLegacyCareer(cs as never)]),
@@ -103,7 +128,26 @@ function migrateSnapshot(s: SetupSnapshot): SetupSnapshot {
     };
   }
 
-  return next;
+  const flowsTrimmed = (next.flows ?? []).map((f) => ({
+    ...f,
+    atsIds: f.atsIds.slice(0, atsLimitPerFlow),
+  }));
+  const referencedAts = new Set(flowsTrimmed.flatMap((f) => f.atsIds));
+  const atsByIdPruned = Object.fromEntries(
+    Object.entries(next.atsById).filter(([id]) => referencedAts.has(id)),
+  );
+  const trimmed: SetupSnapshot = {
+    ...next,
+    flows: flowsTrimmed,
+    atsById: atsByIdPruned,
+    selection: sanitizeSelection(s.selection, {
+      ...next,
+      flows: flowsTrimmed,
+      atsById: atsByIdPruned,
+    }),
+  };
+
+  return trimmed;
 }
 
 export function loadDraft(): SetupSnapshot | null {
