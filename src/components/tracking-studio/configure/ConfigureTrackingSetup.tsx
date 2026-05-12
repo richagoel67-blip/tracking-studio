@@ -300,7 +300,7 @@ function vendorsUsedByOtherAtsEntries(
   for (const [id, a] of Object.entries(atsById)) {
     if (id === currentCatalogId) continue;
     const v = a.vendor.trim();
-    if (v) taken.add(a.vendor);
+    if (v) taken.add(v);
   }
   return taken;
 }
