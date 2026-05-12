@@ -40,39 +40,42 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Input } from "@/components/ui/input";
+import { FieldInput } from "@/components/ui/field-input";
 import { Label } from "@/components/ui/label";
 import {
   SearchableDropdown,
   type SearchableDropdownOption,
 } from "@/components/ui/searchable-dropdown";
-import { Separator } from "@/components/ui/separator";
-import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
-import {
-  AtsEventsSection,
-  CareerSiteEventsSection,
-  TrackingConfigurationPixelGuidance,
-} from "./configure-event-forms";
+import { pixelMethodRecommendationForVendor } from "./ats-pixel-method-recommendation";
+import { ATS_VENDOR_LOGO_URL } from "./ats-vendor-logos";
+import { AtsEventsSection, CareerSiteEventsSection } from "./configure-event-forms";
 import { deriveTrackingPattern } from "./derive-tracking-pattern";
 import {
-  countCustomEventsDefined,
-  countEnabledCustomEventsGlobally,
-  countEnabledDefaultEvents,
-  countGlobalCustomEvents,
+  applyAutoFlowNamesToFlows,
+  buildAutoFlowName,
+  careerTemplateNameFromBaseUrl,
+} from "./flow-auto-naming";
+import {
+  countCustomEventsDefinedFromFlowNodes,
+  countEnabledCustomEventsFromFlowNodes,
+  countEnabledDefaultEventsFromFlowNodes,
   createDefaultAtsEvents,
   createDefaultCareerEvents,
   createS2sDefaultAtsEvents,
   createS2sDefaultCareerEvents,
   enabledEventChips,
   eventChipToneClassNames,
-  hasAnyDuplicateCustomNameError,
+  hasAnyDuplicateCustomNameErrorForFlowNodes,
   isAtsTrackingComplete,
   isCareerTrackingComplete,
+  isValidHttpOrHttpsUrl,
   isTrackingEventRowValid,
-  markCustomDuplicateErrors,
+  markCustomDuplicateErrorsForFlowNodes,
+  normalizeAtsEventsOrder,
+  normalizeCareerEventsOrder,
   nodeHasSelectedS2sEvents,
   S2S_EVENT_SOURCE_OPTIONS,
   s2sEventSourceLabel,
@@ -81,20 +84,43 @@ import {
   type CareerSiteState,
   type S2sEventSource,
   type S2sTestStatus,
+  type TrackingEvent,
+  type TrackingMethod,
 } from "./tracking-events";
+import {
+  buildInitialCareerEventsForOwnershipConflict,
+  filterResolutionKeysForAtsNode,
+  filterResolutionKeysForCareerNode,
+  filterResolutionKeysForFlow,
+  getAtsFunnelRowUi,
+  getAtsFunnelRowsBlockedByCareerSequentialOwnership,
+  getCareerOwnershipRowMeta,
+  getEarliestEnabledFunnelEvent,
+  getOwnershipConflictPanel,
+  mergeAtsFunnelOwnershipRowMeta,
+  type CareerRowOwnershipMeta,
+  type EventOwnershipResolution,
+} from "./event-funnel-ownership";
 import { buildSetupDiffLines } from "./tracking-setup-diff";
 import {
   type Architecture,
   atsLimitPerFlow,
+  atsTemplateLimit,
   clearDraft,
   clearLive,
   cloneSnapshot,
   loadDraft,
   loadLive,
   loadMode,
+  mergeAtsTemplateAndNode,
+  mergeCareerTemplateAndNode,
   saveDraft as persistDraft,
   saveLive,
   saveMode,
+  type AtsFlowNodeState,
+  type AtsTemplate,
+  type CareerFlowNodeState,
+  type CareerSiteTemplate,
   type FlowState,
   type Selection,
   type SetupSnapshot,
@@ -111,6 +137,14 @@ const ATS_VENDOR_PIXEL_METHOD_TAG: Record<(typeof ATS_OPTIONS)[number], string> 
   BambooHR: "JS recommended",
   Avionte: "Image recommended",
 };
+
+function atsPixelMethodRecommendationForPanel(
+  vendor: string,
+  architecture: Architecture,
+): "js" | "image" | undefined {
+  if (architecture !== "pixel") return undefined;
+  return pixelMethodRecommendationForVendor(vendor);
+}
 
 const STEPPER_STEPS = [
   { title: "Select architecture", subtitle: "tracking method" },
@@ -179,44 +213,123 @@ function FlowCatalogDropdownInfoBanner({ message }: { message: string }) {
   );
 }
 
-function attachableAtsEntriesForFlow(
+function mergedAtsFromMaps(
+  nodeId: string,
+  atsFlowNodesById: Record<string, AtsFlowNodeState>,
+  atsTemplatesById: Record<string, AtsTemplate>,
+): AtsState | null {
+  const n = atsFlowNodesById[nodeId];
+  const t = n ? atsTemplatesById[n.templateId] : null;
+  if (!n || !t) return null;
+  return mergeAtsTemplateAndNode(t, n);
+}
+
+function vendorsOnFlow(
   flow: FlowState,
-  atsById: Record<string, AtsState>,
-): { id: string; vendor: string }[] {
-  return Object.entries(atsById)
-    .filter(([id]) => !flow.atsIds.includes(id))
-    .map(([id, a]) => ({ id, vendor: a.vendor }));
+  atsFlowNodesById: Record<string, AtsFlowNodeState>,
+  atsTemplatesById: Record<string, AtsTemplate>,
+): Set<string> {
+  const s = new Set<string>();
+  for (const id of flow.atsIds) {
+    const m = mergedAtsFromMaps(id, atsFlowNodesById, atsTemplatesById);
+    const v = m?.vendor.trim();
+    if (v) s.add(v);
+  }
+  return s;
+}
+
+function nextUnusedTemplateVendor(atsTemplatesById: Record<string, AtsTemplate>): string {
+  const used = new Set(Object.values(atsTemplatesById).map((t) => t.vendor.trim()));
+  return ATS_OPTIONS.find((v) => !used.has(v)) ?? ATS_OPTIONS[0];
+}
+
+function atsTemplateCatalogEntries(atsTemplatesById: Record<string, AtsTemplate>): {
+  templateId: string;
+  label: string;
+}[] {
+  return Object.entries(atsTemplatesById).map(([templateId, t]) => ({
+    templateId,
+    label: t.vendor.trim() || "ATS",
+  }));
+}
+
+function atsCopySourcesOtherFlows(
+  flowId: string,
+  flows: FlowState[],
+  atsFlowNodesById: Record<string, AtsFlowNodeState>,
+  atsTemplatesById: Record<string, AtsTemplate>,
+): { sourceNodeId: string; flowName: string; vendor: string }[] {
+  const out: { sourceNodeId: string; flowName: string; vendor: string }[] = [];
+  for (const f of flows) {
+    if (f.id === flowId) continue;
+    const aid = f.atsIds[0];
+    if (!aid) continue;
+    const m = mergedAtsFromMaps(aid, atsFlowNodesById, atsTemplatesById);
+    if (!m) continue;
+    out.push({
+      sourceNodeId: aid,
+      flowName: f.name.trim() || "Flow",
+      vendor: m.vendor.trim() || "ATS",
+    });
+  }
+  return out;
+}
+
+function pruneAtsTemplatesForFlows(
+  flows: FlowState[],
+  atsFlowNodesById: Record<string, AtsFlowNodeState>,
+  atsTemplatesById: Record<string, AtsTemplate>,
+): Record<string, AtsTemplate> {
+  const ref = new Set<string>();
+  for (const f of flows) {
+    for (const aid of f.atsIds) {
+      const n = atsFlowNodesById[aid];
+      if (n?.templateId) ref.add(n.templateId);
+    }
+  }
+  return Object.fromEntries(Object.entries(atsTemplatesById).filter(([k]) => ref.has(k)));
 }
 
 function AddAtsToFlowControl({
   readOnly,
+  canAddAts,
   canCreateNewTemplate,
-  attachable,
-  onCreateNew,
-  onAttach,
+  templateOptions,
+  copySources,
+  onCreateNewTemplate,
+  onAttachTemplate,
+  onCopyFromSource,
   triggerClassName,
   variant,
 }: {
   readOnly?: boolean;
+  canAddAts: boolean;
   canCreateNewTemplate: boolean;
-  attachable: { id: string; vendor: string }[];
-  onCreateNew: () => void;
-  onAttach: (catalogId: string) => void;
+  templateOptions: { templateId: string; label: string }[];
+  copySources: { sourceNodeId: string; flowName: string; vendor: string }[];
+  onCreateNewTemplate: () => void;
+  onAttachTemplate: (templateId: string) => void;
+  onCopyFromSource: (sourceNodeId: string) => void;
   triggerClassName: string;
   variant: "row" | "tile";
 }) {
-  if (!canCreateNewTemplate && attachable.length === 0) return null;
+  if (!canAddAts) return null;
 
   const label =
     variant === "row" ? <span>Add ATS</span> : <span className="text-center text-sm">Add ATS</span>;
 
-  if (canCreateNewTemplate && attachable.length === 0) {
+  const showMenu =
+    canCreateNewTemplate || templateOptions.length > 0 || copySources.length > 0;
+
+  if (!showMenu) return null;
+
+  if (canCreateNewTemplate && templateOptions.length === 0 && copySources.length === 0) {
     return (
       <button
         type="button"
         disabled={readOnly}
         onClick={() => {
-          if (!readOnly) onCreateNew();
+          if (!readOnly) onCreateNewTemplate();
         }}
         className={triggerClassName}
       >
@@ -235,21 +348,39 @@ function AddAtsToFlowControl({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-72 p-2">
-        <FlowCatalogDropdownInfoBanner message="Each flow can include one ATS. Reuse an existing ATS template from the list when your catalog is full." />
+        <FlowCatalogDropdownInfoBanner message={`Up to ${atsTemplateLimit} ATS definitions per client. Reuse one on another flow and adjust tracking per flow.`} />
         <DropdownMenuSeparator />
         {canCreateNewTemplate ? (
           <DropdownMenuItem
             onClick={() => {
-              onCreateNew();
+              if (!readOnly) onCreateNewTemplate();
             }}
           >
-            New ATS template
+            + New ATS
           </DropdownMenuItem>
         ) : null}
-        {canCreateNewTemplate && attachable.length > 0 ? <DropdownMenuSeparator /> : null}
-        {attachable.map((a) => (
-          <DropdownMenuItem key={a.id} onClick={() => onAttach(a.id)}>
-            Use &quot;{a.vendor}&quot;
+        {canCreateNewTemplate && (templateOptions.length > 0 || copySources.length > 0) ? (
+          <DropdownMenuSeparator />
+        ) : null}
+        {templateOptions.map((o) => (
+          <DropdownMenuItem
+            key={o.templateId}
+            onClick={() => {
+              if (!readOnly) onAttachTemplate(o.templateId);
+            }}
+          >
+            Use {o.label}
+          </DropdownMenuItem>
+        ))}
+        {copySources.length > 0 && templateOptions.length > 0 ? <DropdownMenuSeparator /> : null}
+        {copySources.map((c) => (
+          <DropdownMenuItem
+            key={c.sourceNodeId}
+            onClick={() => {
+              if (!readOnly) onCopyFromSource(c.sourceNodeId);
+            }}
+          >
+            Copy {c.vendor} setup from {c.flowName}
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
@@ -261,26 +392,38 @@ function newId() {
   return `id-${crypto.randomUUID().slice(0, 8)}`;
 }
 
-function emptyCareerSite(name: string, architecture: Architecture): CareerSiteState {
-  if (architecture === "s2s") {
-    return {
-      name,
-      baseUrl: "",
-      events: createS2sDefaultCareerEvents(),
-      s2sEventSource: "",
-      s2sEndpointUrl: "",
-      s2sTestStatus: "not_tested",
-    };
-  }
-  return {
-    name,
-    baseUrl: "",
-    events: createDefaultCareerEvents(),
-  };
+function initialFlows(): FlowState[] {
+  return [{ id: newId(), name: "Flow 1", nameMode: "auto", careerFlowNodeId: null, atsIds: [] }];
 }
 
-function initialFlows(): FlowState[] {
-  return [{ id: newId(), name: "Flow 1", careerSiteId: null, atsIds: [] }];
+const CAREER_COPIED_HINT_TRACKING_KEYS = new Set([
+  "events",
+  "s2sEventSource",
+  "s2sEndpointUrl",
+  "s2sTestStatus",
+]);
+
+function careerPatchDismissesCopiedReuseHint(patch: Partial<CareerFlowNodeState>): boolean {
+  for (const k of Object.keys(patch)) {
+    if (CAREER_COPIED_HINT_TRACKING_KEYS.has(k)) return true;
+  }
+  return false;
+}
+
+const ATS_COPIED_HINT_TRACKING_KEYS = new Set(["events", "s2sEventSource", "s2sTestStatus"]);
+
+function atsPatchDismissesCopiedReuseHint(patch: Partial<AtsFlowNodeState>): boolean {
+  for (const k of Object.keys(patch)) {
+    if (ATS_COPIED_HINT_TRACKING_KEYS.has(k)) return true;
+  }
+  return false;
+}
+
+function showCopiedReuseHint(
+  copiedFromTemplateId: string | undefined,
+  dismissed: boolean | undefined,
+): boolean {
+  return Boolean(copiedFromTemplateId) && !dismissed;
 }
 
 function emptyAts(vendor: string, architecture: Architecture): AtsState {
@@ -300,20 +443,18 @@ function emptyAts(vendor: string, architecture: Architecture): AtsState {
   };
 }
 
-function nextUnusedAtsVendor(atsById: Record<string, AtsState>): string {
-  const used = new Set(Object.values(atsById).map((a) => a.vendor));
-  return ATS_OPTIONS.find((n) => !used.has(n)) ?? ATS_OPTIONS[0];
-}
-
-/** Vendors already chosen by another ATS catalog row (max 2 rows; each should use a distinct option). */
-function vendorsUsedByOtherAtsEntries(
-  atsById: Record<string, AtsState>,
-  currentCatalogId: string,
+/** Vendors already chosen by another ATS flow node (same flow only has one slot — used for vendor dropdown). */
+function vendorsUsedByOtherAtsOnSameFlow(
+  flow: FlowState,
+  atsFlowNodesById: Record<string, AtsFlowNodeState>,
+  atsTemplatesById: Record<string, AtsTemplate>,
+  currentNodeId: string,
 ): Set<string> {
   const taken = new Set<string>();
-  for (const [id, a] of Object.entries(atsById)) {
-    if (id === currentCatalogId) continue;
-    const v = a.vendor.trim();
+  for (const id of flow.atsIds) {
+    if (id === currentNodeId) continue;
+    const m = mergedAtsFromMaps(id, atsFlowNodesById, atsTemplatesById);
+    const v = m?.vendor.trim();
     if (v) taken.add(v);
   }
   return taken;
@@ -321,22 +462,28 @@ function vendorsUsedByOtherAtsEntries(
 
 function canOpenReview(
   flows: FlowState[],
-  careerSiteById: Record<string, CareerSiteState>,
-  atsById: Record<string, AtsState>,
+  careerTemplatesById: Record<string, CareerSiteTemplate>,
+  careerFlowNodesById: Record<string, CareerFlowNodeState>,
+  atsTemplatesById: Record<string, AtsTemplate>,
+  atsFlowNodesById: Record<string, AtsFlowNodeState>,
   architecture: Architecture,
 ): boolean {
-  if (hasAnyDuplicateCustomNameError(careerSiteById, atsById)) return false;
-  const hasAnyNode = flows.some((f) => f.careerSiteId || f.atsIds.length > 0);
+  if (hasAnyDuplicateCustomNameErrorForFlowNodes(careerFlowNodesById, atsFlowNodesById)) return false;
+  const hasAnyNode = flows.some((f) => f.careerFlowNodeId || f.atsIds.length > 0);
   if (!hasAnyNode) return false;
   return flows.every((f) => {
-    const isEmpty = !f.careerSiteId && f.atsIds.length === 0;
+    if (!f.name.trim()) return false;
+    const isEmpty = !f.careerFlowNodeId && f.atsIds.length === 0;
     if (isEmpty) return false;
-    if (f.careerSiteId) {
-      const cs = careerSiteById[f.careerSiteId];
-      if (!cs || !isCareerTrackingComplete(cs, architecture)) return false;
+    if (f.careerFlowNodeId) {
+      const node = careerFlowNodesById[f.careerFlowNodeId];
+      const tmpl = careerTemplatesById[node?.templateId ?? ""];
+      if (!node || !tmpl) return false;
+      const merged = mergeCareerTemplateAndNode(tmpl, node);
+      if (!isCareerTrackingComplete(merged, architecture)) return false;
     }
     for (const aid of f.atsIds) {
-      const ats = atsById[aid];
+      const ats = mergedAtsFromMaps(aid, atsFlowNodesById, atsTemplatesById);
       if (!ats || !isAtsTrackingComplete(ats, architecture)) return false;
     }
     return true;
@@ -345,18 +492,24 @@ function canOpenReview(
 
 function isFlowReviewReady(
   f: FlowState,
-  careerSiteById: Record<string, CareerSiteState>,
-  atsById: Record<string, AtsState>,
+  careerTemplatesById: Record<string, CareerSiteTemplate>,
+  careerFlowNodesById: Record<string, CareerFlowNodeState>,
+  atsTemplatesById: Record<string, AtsTemplate>,
+  atsFlowNodesById: Record<string, AtsFlowNodeState>,
   architecture: Architecture,
 ): boolean {
-  const isEmpty = !f.careerSiteId && f.atsIds.length === 0;
+  if (!f.name.trim()) return false;
+  const isEmpty = !f.careerFlowNodeId && f.atsIds.length === 0;
   if (isEmpty) return false;
-  if (f.careerSiteId) {
-    const cs = careerSiteById[f.careerSiteId];
-    if (!cs || !isCareerTrackingComplete(cs, architecture)) return false;
+  if (f.careerFlowNodeId) {
+    const node = careerFlowNodesById[f.careerFlowNodeId];
+    const tmpl = careerTemplatesById[node?.templateId ?? ""];
+    if (!node || !tmpl) return false;
+    const merged = mergeCareerTemplateAndNode(tmpl, node);
+    if (!isCareerTrackingComplete(merged, architecture)) return false;
   }
   for (const aid of f.atsIds) {
-    const ats = atsById[aid];
+    const ats = mergedAtsFromMaps(aid, atsFlowNodesById, atsTemplatesById);
     if (!ats || !isAtsTrackingComplete(ats, architecture)) return false;
   }
   return true;
@@ -391,60 +544,88 @@ function s2sAtsBlockers(a: AtsState): string[] {
 
 function reviewBlockers(
   flows: FlowState[],
-  careerSiteById: Record<string, CareerSiteState>,
-  atsById: Record<string, AtsState>,
+  careerTemplatesById: Record<string, CareerSiteTemplate>,
+  careerFlowNodesById: Record<string, CareerFlowNodeState>,
+  atsTemplatesById: Record<string, AtsTemplate>,
+  atsFlowNodesById: Record<string, AtsFlowNodeState>,
   architecture: Architecture,
 ): string[] {
   const issues: string[] = [];
-  if (hasAnyDuplicateCustomNameError(careerSiteById, atsById)) {
+  if (hasAnyDuplicateCustomNameErrorForFlowNodes(careerFlowNodesById, atsFlowNodesById)) {
     issues.push("This custom event name already exists.");
   }
   for (const f of flows) {
-    const empty = !f.careerSiteId && f.atsIds.length === 0;
+    if (!f.name.trim()) {
+      issues.push(`${flowDisplayName(f)}: Enter a flow name.`);
+    }
+    const empty = !f.careerFlowNodeId && f.atsIds.length === 0;
     if (empty) {
-      issues.push(`${f.name}: Add a career site or ATS to this flow.`);
+      issues.push(`${flowDisplayName(f)}: Add a career site or ATS to this flow.`);
       continue;
     }
     if (architecture === "s2s") {
-      if (f.careerSiteId) {
-        const cs = careerSiteById[f.careerSiteId];
-        if (cs) {
+      if (f.careerFlowNodeId) {
+        const node = careerFlowNodesById[f.careerFlowNodeId];
+        const tmpl = node ? careerTemplatesById[node.templateId] : null;
+        if (node && tmpl) {
+          const cs = mergeCareerTemplateAndNode(tmpl, node);
           for (const line of s2sCareerBlockers(cs)) {
-            issues.push(`${f.name}: ${line}`);
+            issues.push(`${flowDisplayName(f)}: ${line}`);
           }
         }
       }
       for (const aid of f.atsIds) {
-        const a = atsById[aid];
+        const a = mergedAtsFromMaps(aid, atsFlowNodesById, atsTemplatesById);
         if (a) {
           for (const line of s2sAtsBlockers(a)) {
-            issues.push(`${f.name}: ${line}`);
+            issues.push(`${flowDisplayName(f)}: ${line}`);
           }
         }
       }
-    } else if (!isFlowReviewReady(f, careerSiteById, atsById, architecture)) {
-      issues.push(`${f.name}: complete tracking configuration (URLs and required fields).`);
+    } else if (
+      !isFlowReviewReady(
+        f,
+        careerTemplatesById,
+        careerFlowNodesById,
+        atsTemplatesById,
+        atsFlowNodesById,
+        architecture,
+      )
+    ) {
+      issues.push(
+        `${flowDisplayName(f)}: complete tracking configuration (URLs and required fields).`,
+      );
     }
   }
   return issues;
 }
 
+function flowDisplayName(f: FlowState): string {
+  return f.name.trim() || "Untitled flow";
+}
+
 /** Matches Figma flow card: career counts as one node; all ATS slots together count as one node (not per ATS). */
 function flowTrackingNodeCount(f: FlowState): number {
-  return (f.careerSiteId ? 1 : 0) + (f.atsIds.length > 0 ? 1 : 0);
+  return (f.careerFlowNodeId ? 1 : 0) + (f.atsIds.length > 0 ? 1 : 0);
 }
 
 function flowPathSummaryLine(
   flow: FlowState,
-  career: CareerSiteState | null,
-  atsById: Record<string, AtsState>,
+  careerTemplatesById: Record<string, CareerSiteTemplate>,
+  careerFlowNodesById: Record<string, CareerFlowNodeState>,
+  atsTemplatesById: Record<string, AtsTemplate>,
+  atsFlowNodesById: Record<string, AtsFlowNodeState>,
 ): string | null {
+  const nid = flow.careerFlowNodeId;
+  const node = nid ? careerFlowNodesById[nid] : null;
+  const tmpl = node ? careerTemplatesById[node.templateId] : null;
+  const career = node && tmpl ? mergeCareerTemplateAndNode(tmpl, node) : null;
   const cname = career ? career.name.trim() || "Career site" : "";
   const ids = flow.atsIds;
   if (ids.length === 0) {
     return career ? cname : null;
   }
-  const first = atsById[ids[0]!];
+  const first = mergedAtsFromMaps(ids[0]!, atsFlowNodesById, atsTemplatesById);
   const vendor = first?.vendor.trim() || "ATS";
   if (career) return `${cname} → ${vendor}`;
   return vendor;
@@ -452,6 +633,82 @@ function flowPathSummaryLine(
 
 function architectureLabel(a: Architecture): string {
   return a === "pixel" ? "Pixel tracking" : "Server-to-server tracking";
+}
+
+function ReviewFlowColumnConnector() {
+  return (
+    <div className="flex shrink-0 items-center self-center px-1 sm:px-2" aria-hidden>
+      <ChevronRight
+        className="size-5 text-[color:var(--figma-gray-border-03)] sm:size-6"
+        strokeWidth={1.5}
+      />
+    </div>
+  );
+}
+
+function reviewPixelMethodLabel(m: TrackingMethod): string {
+  if (m === "js") return "JS";
+  if (m === "image") return "Image";
+  return m;
+}
+
+function ReviewPixelEventColumn({
+  events,
+  architecture,
+}: {
+  events: TrackingEvent[];
+  architecture: Architecture;
+}) {
+  const rows = events.filter((e) => e.type === "custom" || e.enabled);
+  if (rows.length === 0) {
+    return <p className="text-xs text-[color:var(--figma-gray-text-03)]">No events enabled</p>;
+  }
+  return (
+    <div className="flex min-w-0 max-w-[300px] flex-col gap-5">
+      {rows.map((ev) => (
+        <div key={ev.id} className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className="text-sm font-medium text-[color:var(--figma-gray-text-04)]">
+              {ev.label}
+            </span>
+            <span
+              className={cn(
+                "rounded-full px-2 py-0.5 text-xs font-semibold leading-[18px]",
+                eventChipToneClassNames(ev.eventKey),
+              )}
+            >
+              {ev.eventKey}
+            </span>
+          </div>
+          {architecture === "pixel" ? (
+            <>
+              <div className="flex flex-wrap items-baseline gap-1">
+                <span className="text-xs font-medium text-[color:var(--figma-gray-text-03)]">
+                  Tracking Method:
+                </span>
+                <span className="text-sm text-[color:var(--figma-gray-text-05)]">
+                  {reviewPixelMethodLabel(ev.trackingMethod)}
+                </span>
+              </div>
+              <div className="flex min-w-0 flex-wrap items-baseline gap-1">
+                <span className="shrink-0 text-xs font-medium text-[color:var(--figma-gray-text-03)]">
+                  URL:
+                </span>
+                <span className="min-w-0 break-all text-sm text-[color:var(--figma-gray-text-05)]">
+                  {ev.url.trim() || "—"}
+                </span>
+              </div>
+              {!isTrackingEventRowValid(ev, architecture) ? (
+                <span className="text-xs font-medium text-[color:var(--figma-error-main)]">
+                  Incomplete
+                </span>
+              ) : null}
+            </>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function ExitUnsavedChangesDialog({
@@ -489,8 +746,10 @@ function ExitUnsavedChangesDialog({
 function ReviewTrackingStage({
   architecture,
   flows,
-  careerSiteById,
-  atsById,
+  careerTemplatesById,
+  careerFlowNodesById,
+  atsTemplatesById,
+  atsFlowNodesById,
   reviewEnabled,
   blockers,
   onBack,
@@ -504,8 +763,10 @@ function ReviewTrackingStage({
 }: {
   architecture: Architecture;
   flows: FlowState[];
-  careerSiteById: Record<string, CareerSiteState>;
-  atsById: Record<string, AtsState>;
+  careerTemplatesById: Record<string, CareerSiteTemplate>;
+  careerFlowNodesById: Record<string, CareerFlowNodeState>;
+  atsTemplatesById: Record<string, AtsTemplate>;
+  atsFlowNodesById: Record<string, AtsFlowNodeState>;
   reviewEnabled: boolean;
   blockers: string[];
   onBack: () => void;
@@ -518,11 +779,20 @@ function ReviewTrackingStage({
   onPublish?: () => void;
   diffLines?: string[];
 }) {
-  const careerCatalogCount = Object.keys(careerSiteById).length;
-  const atsCatalogCount = Object.keys(atsById).length;
-  const enabledDefaultEvents = countEnabledDefaultEvents(careerSiteById, atsById);
-  const enabledCustomEvents = countEnabledCustomEventsGlobally(careerSiteById, atsById);
-  const customRowsTotal = countCustomEventsDefined(careerSiteById, atsById);
+  const careerCatalogCount = Object.keys(careerTemplatesById).length;
+  const atsTemplateCount = Object.keys(atsTemplatesById).length;
+  const enabledDefaultEvents = countEnabledDefaultEventsFromFlowNodes(
+    careerFlowNodesById,
+    atsFlowNodesById,
+  );
+  const enabledCustomEvents = countEnabledCustomEventsFromFlowNodes(
+    careerFlowNodesById,
+    atsFlowNodesById,
+  );
+  const customRowsTotal = countCustomEventsDefinedFromFlowNodes(
+    careerFlowNodesById,
+    atsFlowNodesById,
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
@@ -554,8 +824,8 @@ function ReviewTrackingStage({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto bg-[color:var(--figma-gray-bg-01)] px-6 py-6">
-        <div className="mx-auto max-w-[920px] space-y-6">
+      <div className="min-h-0 flex-1 overflow-y-auto bg-[color:var(--figma-gray-bg-04)] px-6 py-8">
+        <div className="mx-auto max-w-[1136px] space-y-6 rounded-lg border border-[color:var(--figma-gray-border-02)] bg-white p-6 shadow-[0_1px_3px_rgba(0,0,0,0.06)] sm:p-8">
           {architecture === "s2s" ? (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <div className="rounded-lg border border-[color:var(--figma-gray-border-02)] bg-white p-4 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
@@ -587,7 +857,7 @@ function ReviewTrackingStage({
                   ATSs used
                 </p>
                 <p className="mt-1 text-sm font-semibold text-[color:var(--figma-gray-text-05)]">
-                  {atsCatalogCount}
+                  {atsTemplateCount}
                 </p>
               </div>
               <div className="rounded-lg border border-[color:var(--figma-gray-border-02)] bg-white p-4 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
@@ -637,7 +907,7 @@ function ReviewTrackingStage({
                 </p>
                 <p className="mt-1 text-sm font-semibold text-[color:var(--figma-gray-text-05)]">
                   {careerCatalogCount} career site{careerCatalogCount === 1 ? "" : "s"},{" "}
-                  {atsCatalogCount} ATS template{atsCatalogCount === 1 ? "" : "s"}
+                  {atsTemplateCount} ATS definition{atsTemplateCount === 1 ? "" : "s"}
                 </p>
               </div>
             </div>
@@ -678,31 +948,47 @@ function ReviewTrackingStage({
 
           <div className="space-y-4">
             <h2 className="text-sm font-semibold text-[color:var(--figma-gray-text-05)]">Flows</h2>
-            {flows.map((flow) => {
-              const career = flow.careerSiteId ? (careerSiteById[flow.careerSiteId] ?? null) : null;
-              const ready = isFlowReviewReady(flow, careerSiteById, atsById, architecture);
-              const pathLine = flowPathSummaryLine(flow, career, atsById);
+            {flows.map((flow, flowIndex) => {
+              const careerNode = flow.careerFlowNodeId
+                ? careerFlowNodesById[flow.careerFlowNodeId]
+                : null;
+              const tmpl = careerNode ? careerTemplatesById[careerNode.templateId] : null;
+              const career =
+                careerNode && tmpl ? mergeCareerTemplateAndNode(tmpl, careerNode) : null;
+              const careerCopied = showCopiedReuseHint(
+                careerNode?.copiedFromTemplateId,
+                careerNode?.copiedReuseHintDismissed,
+              );
+              const ready = isFlowReviewReady(
+                flow,
+                careerTemplatesById,
+                careerFlowNodesById,
+                atsTemplatesById,
+                atsFlowNodesById,
+                architecture,
+              );
+              const pathLine = flowPathSummaryLine(
+                flow,
+                careerTemplatesById,
+                careerFlowNodesById,
+                atsTemplatesById,
+                atsFlowNodesById,
+              );
+              const flowHeading =
+                pathLine != null && pathLine.length > 0
+                  ? `Flow ${flowIndex + 1}: ${pathLine}`
+                  : `Flow ${flowIndex + 1}: ${flowDisplayName(flow)}`;
+
               return (
                 <div
                   key={flow.id}
-                  className="rounded-lg border border-[color:var(--figma-gray-border-02)] bg-white p-4 shadow-[0_1px_3px_rgba(0,0,0,0.06)]"
+                  className="overflow-hidden rounded-lg border border-[color:var(--figma-gray-border-03)] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.06)]"
                 >
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-semibold text-[color:var(--figma-gray-text-05)]">
-                        {flow.name}
-                      </p>
-                      {pathLine ? (
-                        <p className="mt-1 text-xs text-[color:var(--figma-gray-text-03)]">
-                          {pathLine}
-                        </p>
-                      ) : (
-                        <p className="mt-1 text-xs text-[color:var(--figma-gray-text-03)]">
-                          No career site or ATS attached
-                        </p>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[color:var(--figma-gray-border-02)] bg-[color:var(--figma-gray-bg-04)] px-4 py-4">
+                    <p className="min-w-0 flex-1 text-base font-medium leading-6 text-[color:var(--figma-gray-text-05)]">
+                      {flowHeading}
+                    </p>
+                    <div className="flex shrink-0 flex-wrap items-center gap-2">
                       <span
                         className={cn(
                           "rounded-full px-2.5 py-0.5 text-xs font-semibold",
@@ -717,14 +1003,84 @@ function ReviewTrackingStage({
                         type="button"
                         variant="outline"
                         size="sm"
+                        className="gap-2 border-[color:var(--figma-gray-border-02)] bg-white text-[color:var(--figma-primary-main)] hover:bg-[color:var(--figma-gray-bg-01)]"
                         onClick={() => onEditFlow(flow.id)}
                       >
+                        <Pencil className="size-4 shrink-0" strokeWidth={1.75} />
                         Edit flow
                       </Button>
                     </div>
                   </div>
 
-                  <div className="mt-4 grid gap-3 border-t border-[color:var(--figma-gray-border-02)] pt-4 sm:grid-cols-2">
+                  {architecture === "pixel" ? (
+                    <div className="overflow-x-auto bg-white p-4">
+                      {(() => {
+                        const cols: React.ReactNode[] = [];
+                        let needConnector = false;
+                        if (career) {
+                          cols.push(
+                            <div key="career" className="flex min-w-0 shrink-0 flex-col gap-5">
+                              <p className="text-xs font-medium text-[color:var(--figma-gray-text-04)]">
+                                {career.name.trim() || "Career site"}
+                              </p>
+                              {careerCopied ? (
+                                <p className="text-xs text-[color:var(--figma-gray-text-03)]">
+                                  Copied
+                                </p>
+                              ) : null}
+                              <ReviewPixelEventColumn
+                                events={career.events}
+                                architecture={architecture}
+                              />
+                            </div>,
+                          );
+                          needConnector = true;
+                        }
+                        for (const aid of flow.atsIds) {
+                          const node = atsFlowNodesById[aid];
+                          const a = mergedAtsFromMaps(aid, atsFlowNodesById, atsTemplatesById);
+                          if (!node || !a) continue;
+                          if (needConnector) {
+                            cols.push(<ReviewFlowColumnConnector key={`conn-${aid}`} />);
+                          }
+                          needConnector = true;
+                          const atsCopied = showCopiedReuseHint(
+                            node.copiedFromTemplateId,
+                            node.copiedReuseHintDismissed,
+                          );
+                          cols.push(
+                            <div key={aid} className="flex min-w-0 shrink-0 flex-col gap-5">
+                              <div className="inline-flex w-fit rounded border border-[color:var(--figma-gray-border-02)] bg-[color:var(--figma-gray-bg-03)] px-2 py-0.5">
+                                <span className="text-xs font-medium text-[color:var(--figma-gray-text-04)]">
+                                  {a.vendor.trim() || "ATS"}
+                                </span>
+                              </div>
+                              {atsCopied ? (
+                                <p className="text-xs text-[color:var(--figma-gray-text-03)]">
+                                  Copied
+                                </p>
+                              ) : null}
+                              <ReviewPixelEventColumn
+                                events={a.events}
+                                architecture={architecture}
+                              />
+                            </div>,
+                          );
+                        }
+                        if (cols.length === 0) {
+                          return (
+                            <p className="text-sm text-[color:var(--figma-gray-text-03)]">
+                              No career site or ATS attached
+                            </p>
+                          );
+                        }
+                        return (
+                          <div className="flex min-w-min flex-nowrap items-start gap-2">{cols}</div>
+                        );
+                      })()}
+                    </div>
+                  ) : (
+                    <div className="grid gap-3 p-4 sm:grid-cols-2">
                     <div className="rounded-md bg-[color:var(--figma-gray-bg-01)] p-3">
                       <p className="text-xs font-medium text-[color:var(--figma-gray-text-03)]">
                         Career site
@@ -738,6 +1094,11 @@ function ReviewTrackingStage({
                               </span>
                               {career.name}
                             </p>
+                            {careerCopied ? (
+                              <p className="text-xs font-medium text-[color:var(--figma-gray-text-03)]">
+                                Copied
+                              </p>
+                            ) : null}
                             <p>
                               <span className="font-semibold text-[color:var(--figma-gray-text-05)]">
                                 Node type:{" "}
@@ -783,6 +1144,11 @@ function ReviewTrackingStage({
                             <p className="font-semibold text-[color:var(--figma-gray-text-05)]">
                               {career.name}
                             </p>
+                            {careerCopied ? (
+                              <p className="text-xs font-medium text-[color:var(--figma-gray-text-03)]">
+                                Copied
+                              </p>
+                            ) : null}
                             {career.baseUrl.trim() ? (
                               <p className="truncate text-xs">{career.baseUrl.trim()}</p>
                             ) : null}
@@ -878,8 +1244,13 @@ function ReviewTrackingStage({
                       ) : (
                         <ul className="mt-2 space-y-3">
                           {flow.atsIds.map((aid) => {
-                            const a = atsById[aid];
-                            if (!a) return null;
+                            const node = atsFlowNodesById[aid];
+                            const a = mergedAtsFromMaps(aid, atsFlowNodesById, atsTemplatesById);
+                            if (!a || !node) return null;
+                            const atsCopied = showCopiedReuseHint(
+                              node.copiedFromTemplateId,
+                              node.copiedReuseHintDismissed,
+                            );
                             if (architecture === "s2s") {
                               return (
                                 <li
@@ -889,6 +1260,11 @@ function ReviewTrackingStage({
                                   <p className="font-semibold text-[color:var(--figma-gray-text-05)]">
                                     {a.vendor}
                                   </p>
+                                  {atsCopied ? (
+                                    <p className="text-xs font-medium text-[color:var(--figma-gray-text-03)]">
+                                      Copied
+                                    </p>
+                                  ) : null}
                                   <p>
                                     <span className="font-semibold text-[color:var(--figma-gray-text-05)]">
                                       Node type:{" "}
@@ -951,6 +1327,11 @@ function ReviewTrackingStage({
                                 <span className="font-semibold text-[color:var(--figma-gray-text-05)]">
                                   {a.vendor}
                                 </span>
+                                {atsCopied ? (
+                                  <p className="mt-1 text-xs font-medium text-[color:var(--figma-gray-text-03)]">
+                                    Copied
+                                  </p>
+                                ) : null}
                                 <div className="mt-1 space-y-1.5">
                                   {a.events
                                     .filter((e) => e.type === "custom" || e.enabled)
@@ -1034,6 +1415,7 @@ function ReviewTrackingStage({
                       )}
                     </div>
                   </div>
+                  )}
                 </div>
               );
             })}
@@ -1042,7 +1424,7 @@ function ReviewTrackingStage({
       </div>
 
       <div className="border-t border-[color:var(--figma-gray-border-02)] bg-white px-6 py-4">
-        <div className="mx-auto flex max-w-[920px] flex-wrap items-center justify-between gap-3">
+        <div className="mx-auto flex max-w-[1136px] flex-wrap items-center justify-between gap-3">
           <Button type="button" variant="ghost" size="sm" onClick={onBack}>
             Back to edit
           </Button>
@@ -1083,6 +1465,7 @@ function LaunchTrackingStage({
   defaultEventsEnabled,
   customEventsCount,
   customEventsEnabledCount,
+  launchContext = "initial",
   onExitForNow,
   onGoToInstallationGuide,
   onRunTests,
@@ -1095,6 +1478,8 @@ function LaunchTrackingStage({
   defaultEventsEnabled: number;
   customEventsCount: number;
   customEventsEnabledCount: number;
+  /** `afterPublish` = same layout after editing a launched setup and publishing. */
+  launchContext?: "initial" | "afterPublish";
   onExitForNow: () => void;
   onGoToInstallationGuide: () => void;
   onRunTests: () => void;
@@ -1110,29 +1495,29 @@ function LaunchTrackingStage({
 
   const nextStepsPixel: NextStepRow[] = [
     {
-      title: "Copy or send installation snippets",
-      body: "Share pixel snippets and event mapping with your client developer.",
+      title: "Share setup details with the client developer",
+      body: "Send the generated URLs, endpoints, and event mapping for implementation.",
       action: "Installation guide",
       icon: ChevronRight,
       onAction: onGoToInstallationGuide,
     },
     {
-      title: "Run test mode",
-      body: "Confirm VIEW, LEAD, APPLY_START, APPLY_FINISH, and custom events fire for every flow.",
+      title: "Run validation in Test Tracking",
+      body: "Confirm VIEW, APPLY_START, and APPLY_FINISH are firing for every selected flow.",
       action: "Test mode",
       icon: ChevronRight,
       onAction: onRunTests,
     },
     {
-      title: "Monitor pixel health",
-      body: "Watch event volume, failures, and missing parameters after launch.",
+      title: "Monitor Tracking Health",
+      body: "Watch event volume, failures, missing parameters, and last-seen timestamps after launch.",
       action: "Dashboard",
       icon: ChevronRight,
       onAction: onGoToDashboard,
     },
     {
-      title: "Review attribution after events start firing",
-      body: "Use funnel reports to validate click-to-apply and completion tracking.",
+      title: "Review reports after data starts flowing",
+      body: "Use funnel reports to check click-to-apply and apply-completion tracking accuracy.",
       action: "Dashboard",
       icon: ChevronRight,
       onAction: onGoToDashboard,
@@ -1141,22 +1526,15 @@ function LaunchTrackingStage({
 
   const nextStepsS2s: NextStepRow[] = [
     {
-      title: "Share endpoint details with developer",
+      title: "Share setup details with the client developer",
       body: "Provide event source choices and postback URLs for each career site and ATS node.",
       action: "Installation guide",
       icon: ChevronRight,
       onAction: onGoToInstallationGuide,
     },
     {
-      title: "Send test events",
-      body: "Use the Send test event control in the flow builder to validate each node locally.",
-      action: "Test mode",
-      icon: ChevronRight,
-      onAction: onRunTests,
-    },
-    {
-      title: "Validate incoming events",
-      body: "Confirm payloads match expected keys for VIEW, LEAD, APPLY_START, APPLY_FINISH, and customs.",
+      title: "Run validation in Test Tracking",
+      body: "Send test events and confirm payloads match expected keys for each funnel step.",
       action: "Test mode",
       icon: ChevronRight,
       onAction: onRunTests,
@@ -1169,7 +1547,7 @@ function LaunchTrackingStage({
       onAction: onGoToDashboard,
     },
     {
-      title: "Review attribution after events start firing",
+      title: "Review reports after data starts flowing",
       body: "Use funnel reports once S2S events are flowing into analytics.",
       action: "Dashboard",
       icon: ChevronRight,
@@ -1180,7 +1558,7 @@ function LaunchTrackingStage({
   const nextSteps = architecture === "s2s" ? nextStepsS2s : nextStepsPixel;
 
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-[color:var(--figma-gray-bg-01)]">
+    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-[color:var(--figma-gray-bg-04)]">
       <div className="shrink-0 border-b border-[color:var(--figma-gray-border-02)] bg-white px-6 py-4">
         <SetupStepper stage={4} disableNavigation />
       </div>
@@ -1190,14 +1568,18 @@ function LaunchTrackingStage({
             <Check className="size-8" strokeWidth={2.5} />
           </div>
           <h1 className="mt-6 text-xl font-semibold leading-7 text-[color:var(--figma-gray-text-05)]">
-            {architecture === "s2s"
-              ? "Server-to-server tracking setup launched"
-              : "You're All Set! Let's begin!"}
+            {launchContext === "afterPublish"
+              ? "Changes published successfully"
+              : architecture === "s2s"
+                ? "Server-to-server tracking setup launched"
+                : "You're All Set! Let's begin!"}
           </h1>
           <p className="mt-2 text-sm leading-5 text-[color:var(--figma-gray-text-03)]">
-            {architecture === "s2s"
-              ? "Your S2S tracking flow is now active for Allied Services."
-              : "Our team will get in touch with you to help in further installation."}
+            {launchContext === "afterPublish"
+              ? "Our team will get in touch with you to help in further installation."
+              : architecture === "s2s"
+                ? "Your S2S tracking flow is now active for Allied Services."
+                : "Our team will get in touch with you to help in further installation."}
           </p>
           {architecture === "s2s" ? (
             <ul className="mx-auto mt-6 max-w-md space-y-1.5 text-left text-sm text-[color:var(--figma-gray-text-04)]">
@@ -1287,8 +1669,19 @@ export function ConfigureTrackingSetup({
   }, [stage, onStageChange]);
   const [architecture, setArchitecture] = React.useState<Architecture>("pixel");
   const [flows, setFlows] = React.useState<FlowState[]>(initialFlows);
-  const [careerSiteById, setCareerSiteById] = React.useState<Record<string, CareerSiteState>>({});
-  const [atsById, setAtsById] = React.useState<Record<string, AtsState>>({});
+  const [careerTemplatesById, setCareerTemplatesById] = React.useState<
+    Record<string, CareerSiteTemplate>
+  >({});
+  const [careerFlowNodesById, setCareerFlowNodesById] = React.useState<
+    Record<string, CareerFlowNodeState>
+  >({});
+  const [atsFlowNodesById, setAtsFlowNodesById] = React.useState<Record<string, AtsFlowNodeState>>(
+    {},
+  );
+  const [atsTemplatesById, setAtsTemplatesById] = React.useState<Record<string, AtsTemplate>>({});
+  const [eventOwnershipResolution, setEventOwnershipResolution] = React.useState<
+    Record<string, EventOwnershipResolution>
+  >({});
   const [selection, setSelection] = React.useState<Selection | null>(null);
   const [dirty, setDirty] = React.useState(false);
   const [exitOpen, setExitOpen] = React.useState(false);
@@ -1307,6 +1700,10 @@ export function ConfigureTrackingSetup({
   const [newClientSetupOpen, setNewClientSetupOpen] = React.useState(false);
   const [cancelLiveEditOpen, setCancelLiveEditOpen] = React.useState(false);
   const [lastDraftSavedLabel, setLastDraftSavedLabel] = React.useState<string | null>(null);
+  /** Launch screen (step 4) copy: first-time launch vs after publishing live edits. */
+  const [launchSuccessContext, setLaunchSuccessContext] = React.useState<
+    "initial" | "afterPublish"
+  >("initial");
   const hydratedRef = React.useRef(false);
 
   const readOnlySetup = lifecycleMode === "liveReadOnly";
@@ -1318,29 +1715,38 @@ export function ConfigureTrackingSetup({
       wizardStage: stage,
       architecture,
       flows,
-      careerSiteById,
-      atsById,
+      careerTemplatesById,
+      careerFlowNodesById,
+      atsTemplatesById,
+      atsFlowNodesById,
       careerSiteSerial,
       flowCanvasScale,
       selection,
+      eventOwnershipResolution,
     }),
     [
       stage,
       architecture,
       flows,
-      careerSiteById,
-      atsById,
+      careerTemplatesById,
+      careerFlowNodesById,
+      atsTemplatesById,
+      atsFlowNodesById,
       careerSiteSerial,
       flowCanvasScale,
       selection,
+      eventOwnershipResolution,
     ],
   );
 
   const applySnapshot = React.useCallback((snap: SetupSnapshot) => {
     setArchitecture(snap.architecture);
     setFlows(snap.flows.length ? snap.flows : initialFlows());
-    setCareerSiteById(snap.careerSiteById);
-    setAtsById(snap.atsById);
+    setCareerTemplatesById(snap.careerTemplatesById ?? {});
+    setCareerFlowNodesById(snap.careerFlowNodesById ?? {});
+    setAtsFlowNodesById(snap.atsFlowNodesById ?? {});
+    setAtsTemplatesById(snap.atsTemplatesById ?? {});
+    setEventOwnershipResolution(snap.eventOwnershipResolution ?? {});
     setCareerSiteSerial(snap.careerSiteSerial ?? 1);
     if (snap.flowCanvasScale != null) setFlowCanvasScale(snap.flowCanvasScale);
     setSelection(snap.selection ?? null);
@@ -1370,15 +1776,15 @@ export function ConfigureTrackingSetup({
     }
   }, [applySnapshot]);
 
-  /** Sync duplicate-name errors onto catalog maps after any career/ATS change. */
+  /** Sync duplicate-name errors onto flow node maps after any career/ATS change. */
   React.useEffect(() => {
-    const m = markCustomDuplicateErrors(careerSiteById, atsById);
-    const cEq = JSON.stringify(m.careerSiteById) === JSON.stringify(careerSiteById);
-    const aEq = JSON.stringify(m.atsById) === JSON.stringify(atsById);
+    const m = markCustomDuplicateErrorsForFlowNodes(careerFlowNodesById, atsFlowNodesById);
+    const cEq = JSON.stringify(m.careerFlowNodesById) === JSON.stringify(careerFlowNodesById);
+    const aEq = JSON.stringify(m.atsFlowNodesById) === JSON.stringify(atsFlowNodesById);
     if (cEq && aEq) return;
-    setCareerSiteById(m.careerSiteById);
-    setAtsById(m.atsById);
-  }, [careerSiteById, atsById]);
+    setCareerFlowNodesById(m.careerFlowNodesById);
+    setAtsFlowNodesById(m.atsFlowNodesById);
+  }, [careerFlowNodesById, atsFlowNodesById]);
 
   React.useEffect(() => {
     flowCanvasScaleRef.current = flowCanvasScale;
@@ -1433,7 +1839,14 @@ export function ConfigureTrackingSetup({
     };
   }, [stage]);
 
-  const reviewEnabled = canOpenReview(flows, careerSiteById, atsById, architecture);
+  const reviewEnabled = canOpenReview(
+    flows,
+    careerTemplatesById,
+    careerFlowNodesById,
+    atsTemplatesById,
+    atsFlowNodesById,
+    architecture,
+  );
 
   React.useEffect(() => {
     if (stage !== 2) return;
@@ -1443,6 +1856,28 @@ export function ConfigureTrackingSetup({
       setSelection({ kind: "flow", flowId: first.id });
     }
   }, [stage, flows, selection]);
+
+  React.useEffect(() => {
+    if (stage !== 2) return;
+    setFlows((prev) =>
+      applyAutoFlowNamesToFlows(
+        prev,
+        careerFlowNodesById,
+        careerTemplatesById,
+        atsFlowNodesById,
+        atsTemplatesById,
+        architecture,
+      ),
+    );
+  }, [
+    stage,
+    architecture,
+    careerFlowNodesById,
+    careerTemplatesById,
+    atsFlowNodesById,
+    atsTemplatesById,
+    flows.map((f) => `${f.id}:${f.nameMode ?? "auto"}`).join("|"),
+  ]);
 
   const resolveSelection = (): { flow: FlowState; selection: Selection } | null => {
     if (!selection) return null;
@@ -1469,31 +1904,62 @@ export function ConfigureTrackingSetup({
     markDirty();
   };
 
-  const updateCareerSiteInCatalog = (careerId: string, patch: Partial<CareerSiteState>) => {
-    setCareerSiteById((prev) => {
-      const cs = prev[careerId];
-      if (!cs) return prev;
-      return { ...prev, [careerId]: { ...cs, ...patch } };
+  const updateCareerTemplate = (templateId: string, patch: Partial<CareerSiteTemplate>) => {
+    setCareerTemplatesById((prev) => {
+      const t = prev[templateId];
+      if (!t) return prev;
+      return { ...prev, [templateId]: { ...t, ...patch } };
     });
     markDirty();
   };
 
-  const updateAtsInCatalog = (atsId: string, patch: Partial<AtsState>) => {
-    setAtsById((prev) => {
-      const a = prev[atsId];
+  const updateCareerFlowNode = (nodeId: string, patch: Partial<CareerFlowNodeState>) => {
+    setCareerFlowNodesById((prev) => {
+      const n = prev[nodeId];
+      if (!n) return prev;
+      const shouldDismiss =
+        Boolean(n.copiedFromTemplateId) &&
+        !n.copiedReuseHintDismissed &&
+        careerPatchDismissesCopiedReuseHint(patch);
+      return {
+        ...prev,
+        [nodeId]: {
+          ...n,
+          ...patch,
+          ...(shouldDismiss ? { copiedReuseHintDismissed: true } : {}),
+        },
+      };
+    });
+    markDirty();
+  };
+
+  const updateAtsFlowNode = (nodeId: string, patch: Partial<AtsFlowNodeState>) => {
+    setAtsFlowNodesById((prev) => {
+      const a = prev[nodeId];
       if (!a) return prev;
-      return { ...prev, [atsId]: { ...a, ...patch } };
+      const shouldDismiss =
+        Boolean(a.copiedFromTemplateId) &&
+        !a.copiedReuseHintDismissed &&
+        atsPatchDismissesCopiedReuseHint(patch);
+      return {
+        ...prev,
+        [nodeId]: {
+          ...a,
+          ...patch,
+          ...(shouldDismiss ? { copiedReuseHintDismissed: true } : {}),
+        },
+      };
     });
     markDirty();
   };
 
-  const gcAtsIfUnreferenced = (atsId: string, nextFlows: FlowState[]) => {
-    if (!nextFlows.some((f) => f.atsIds.includes(atsId))) {
-      setAtsById((cat) => {
-        const { [atsId]: _, ...rest } = cat;
-        return rest;
-      });
-    }
+  const updateAtsTemplate = (templateId: string, patch: Partial<AtsTemplate>) => {
+    setAtsTemplatesById((prev) => {
+      const t = prev[templateId];
+      if (!t) return prev;
+      return { ...prev, [templateId]: { ...t, ...patch } };
+    });
+    markDirty();
   };
 
   const selectFlow = (flowId: string) => {
@@ -1506,86 +1972,232 @@ export function ConfigureTrackingSetup({
 
   const createCareerSiteForFlow = (flowId: string) => {
     const flow = flows.find((f) => f.id === flowId);
-    if (!flow || flow.careerSiteId) return;
-    if (Object.keys(careerSiteById).length >= 2) {
-      toast.message("Maximum 2 unique career sites. Attach an existing site instead.");
+    if (!flow || flow.careerFlowNodeId) return;
+    if (Object.keys(careerTemplatesById).length >= 2) {
+      toast.message(
+        "Maximum 2 unique career sites are allowed for one client. Reuse an existing career site instead.",
+      );
       return;
     }
-    const careerId = newId();
+    const templateId = newId();
+    const nodeId = newId();
     const name = `career site ${careerSiteSerial}`;
     setCareerSiteSerial((n) => n + 1);
-    setCareerSiteById((prev) => ({ ...prev, [careerId]: emptyCareerSite(name, architecture) }));
-    updateFlow(flowId, { careerSiteId: careerId });
+    setCareerTemplatesById((prev) => ({ ...prev, [templateId]: { name, baseUrl: "" } }));
+
+    const firstAtsId = flow.atsIds[0] ?? null;
+    const firstAtsNode = firstAtsId ? atsFlowNodesById[firstAtsId] : undefined;
+    const firstAtsTmpl = firstAtsNode ? atsTemplatesById[firstAtsNode.templateId] : undefined;
+    const mergedFirstAts =
+      firstAtsNode && firstAtsTmpl ? mergeAtsTemplateAndNode(firstAtsTmpl, firstAtsNode) : null;
+    const earliestFunnel = mergedFirstAts
+      ? getEarliestEnabledFunnelEvent(mergedFirstAts.events)
+      : null;
+    const hasOwnershipConflict = Boolean(earliestFunnel);
+
+    const nodeState: CareerFlowNodeState =
+      architecture === "s2s"
+        ? {
+            templateId,
+            defaultCareerSiteName: name,
+            events:
+              hasOwnershipConflict && earliestFunnel
+                ? buildInitialCareerEventsForOwnershipConflict(architecture, earliestFunnel)
+                : createS2sDefaultCareerEvents(),
+            s2sEventSource: "",
+            s2sEndpointUrl: "",
+            s2sTestStatus: "not_tested",
+          }
+        : {
+            templateId,
+            defaultCareerSiteName: name,
+            events:
+              hasOwnershipConflict && earliestFunnel
+                ? buildInitialCareerEventsForOwnershipConflict(architecture, earliestFunnel)
+                : createDefaultCareerEvents(),
+          };
+    setCareerFlowNodesById((prev) => ({ ...prev, [nodeId]: nodeState }));
+    updateFlow(flowId, { careerFlowNodeId: nodeId });
     setSelection({ kind: "career", flowId });
+    markDirty();
   };
 
-  const attachCareerSiteToFlow = (flowId: string, careerId: string) => {
+  const attachCareerSiteToFlow = (flowId: string, templateId: string) => {
     const flow = flows.find((f) => f.id === flowId);
-    if (!flow || flow.careerSiteId) return;
-    if (!careerSiteById[careerId]) return;
-    updateFlow(flowId, { careerSiteId: careerId });
+    if (!flow || flow.careerFlowNodeId) return;
+    if (!careerTemplatesById[templateId]) return;
+    const nodeId = newId();
+    const tmplRef = careerTemplatesById[templateId];
+    const defaultCareerSiteName =
+      (tmplRef?.name ?? "").trim() || `career site ${careerSiteSerial}`;
+
+    const firstAtsId = flow.atsIds[0] ?? null;
+    const firstAtsNode = firstAtsId ? atsFlowNodesById[firstAtsId] : undefined;
+    const firstAtsTmpl = firstAtsNode ? atsTemplatesById[firstAtsNode.templateId] : undefined;
+    const mergedFirstAts =
+      firstAtsNode && firstAtsTmpl ? mergeAtsTemplateAndNode(firstAtsTmpl, firstAtsNode) : null;
+    const earliestFunnel = mergedFirstAts
+      ? getEarliestEnabledFunnelEvent(mergedFirstAts.events)
+      : null;
+    const hasOwnershipConflict = Boolean(earliestFunnel);
+
+    const nodeState: CareerFlowNodeState =
+      architecture === "s2s"
+        ? {
+            templateId,
+            copiedFromTemplateId: templateId,
+            defaultCareerSiteName,
+            events:
+              hasOwnershipConflict && earliestFunnel
+                ? buildInitialCareerEventsForOwnershipConflict(architecture, earliestFunnel)
+                : createS2sDefaultCareerEvents(),
+            s2sEventSource: "",
+            s2sEndpointUrl: "",
+            s2sTestStatus: "not_tested",
+          }
+        : {
+            templateId,
+            copiedFromTemplateId: templateId,
+            defaultCareerSiteName,
+            events:
+              hasOwnershipConflict && earliestFunnel
+                ? buildInitialCareerEventsForOwnershipConflict(architecture, earliestFunnel)
+                : createDefaultCareerEvents(),
+          };
+    setCareerFlowNodesById((prev) => ({ ...prev, [nodeId]: nodeState }));
+    updateFlow(flowId, { careerFlowNodeId: nodeId });
     setSelection({ kind: "career", flowId });
+    markDirty();
   };
 
   const removeCareerSite = (flowId: string) => {
-    setFlows((prev) => {
-      const careerId = prev.find((f) => f.id === flowId)?.careerSiteId ?? null;
-      const next = prev.map((f) => (f.id === flowId ? { ...f, careerSiteId: null } : f));
-      if (careerId && !next.some((f) => f.careerSiteId === careerId)) {
-        setCareerSiteById((cat) => {
-          const { [careerId]: _, ...rest } = cat;
-          return rest;
-        });
-      }
-      return next;
-    });
+    const nodeId = flows.find((f) => f.id === flowId)?.careerFlowNodeId ?? null;
+    setFlows((prev) => prev.map((f) => (f.id === flowId ? { ...f, careerFlowNodeId: null } : f)));
+    if (nodeId) {
+      setCareerFlowNodesById((cat) => {
+        const { [nodeId]: _, ...rest } = cat;
+        return rest;
+      });
+      setEventOwnershipResolution((m) => filterResolutionKeysForCareerNode(m, nodeId));
+    }
     setSelection({ kind: "flow", flowId });
     markDirty();
   };
 
-  const createNewAtsForFlow = (flowId: string) => {
+  const createNewAtsTemplateForFlow = (flowId: string) => {
     const flow = flows.find((f) => f.id === flowId);
-    if (!flow) return;
-    if (flow.atsIds.length >= atsLimitPerFlow) {
+    if (!flow || flow.atsIds.length >= atsLimitPerFlow) {
       toast.message("Only one ATS can be added per flow.");
       return;
     }
-    if (Object.keys(atsById).length >= 2) {
-      toast.message("Select an existing ATS template from the menu.");
+    if (Object.keys(atsTemplatesById).length >= atsTemplateLimit) {
+      toast.message(
+        `Maximum ${atsTemplateLimit} ATS definitions for one client. Attach an existing ATS instead.`,
+      );
       return;
     }
-    const aid = newId();
-    const vendor = nextUnusedAtsVendor(atsById);
-    setAtsById((prev) => ({ ...prev, [aid]: emptyAts(vendor, architecture) }));
-    updateFlow(flowId, (f) => ({ ...f, atsIds: [...f.atsIds, aid] }));
-    setSelection({ kind: "ats", flowId, atsId: aid });
+    const tid = newId();
+    const nid = newId();
+    const vendor = nextUnusedTemplateVendor(atsTemplatesById);
+    const defaults = emptyAts(vendor, architecture);
+    setAtsTemplatesById((prev) => ({
+      ...prev,
+      [tid]: { vendor: defaults.vendor, endpointUrl: defaults.endpointUrl },
+    }));
+    const node: AtsFlowNodeState =
+      architecture === "s2s"
+        ? {
+            templateId: tid,
+            events: createS2sDefaultAtsEvents(),
+            s2sEventSource: "",
+            s2sTestStatus: "not_tested",
+          }
+        : {
+            templateId: tid,
+            events: createDefaultAtsEvents(),
+          };
+    setAtsFlowNodesById((prev) => ({ ...prev, [nid]: node }));
+    updateFlow(flowId, (f) => ({ ...f, atsIds: [...f.atsIds, nid] }));
+    setSelection({ kind: "ats", flowId, atsId: nid });
     toast.message(`Added ${vendor}.`);
+    markDirty();
   };
 
-  const confirmReuseAts = (flowId: string, catalogId: string) => {
+  const attachAtsTemplateToFlow = (flowId: string, templateId: string) => {
     const flow = flows.find((f) => f.id === flowId);
-    if (!flow || !atsById[catalogId] || flow.atsIds.includes(catalogId)) return;
-    if (flow.atsIds.length >= atsLimitPerFlow) return;
-    updateFlow(flowId, (f) => ({ ...f, atsIds: [...f.atsIds, catalogId] }));
-    setSelection({ kind: "ats", flowId, atsId: catalogId });
-    toast.message("ATS attached to this flow.");
+    if (!flow || flow.atsIds.length >= atsLimitPerFlow) {
+      toast.message("Only one ATS can be added per flow.");
+      return;
+    }
+    if (!atsTemplatesById[templateId]) return;
+    const nid = newId();
+    const node: AtsFlowNodeState =
+      architecture === "s2s"
+        ? {
+            templateId,
+            copiedFromTemplateId: templateId,
+            events: createS2sDefaultAtsEvents(),
+            s2sEventSource: "",
+            s2sTestStatus: "not_tested",
+          }
+        : {
+            templateId,
+            copiedFromTemplateId: templateId,
+            events: createDefaultAtsEvents(),
+          };
+    setAtsFlowNodesById((prev) => ({ ...prev, [nid]: node }));
+    updateFlow(flowId, (f) => ({ ...f, atsIds: [...f.atsIds, nid] }));
+    setSelection({ kind: "ats", flowId, atsId: nid });
+    markDirty();
   };
 
-  const removeAtsFromFlow = (flowId: string, atsCatalogId: string) => {
-    setFlows((prev) => {
-      const nextFlows = prev.map((f) =>
-        f.id === flowId ? { ...f, atsIds: f.atsIds.filter((id) => id !== atsCatalogId) } : f,
-      );
-      gcAtsIfUnreferenced(atsCatalogId, nextFlows);
-      return nextFlows;
-    });
+  const copyAtsNodeFromOtherFlow = (flowId: string, sourceNodeId: string) => {
+    const flow = flows.find((f) => f.id === flowId);
+    const src = atsFlowNodesById[sourceNodeId];
+    if (!flow || !src || flow.atsIds.length >= atsLimitPerFlow) {
+      toast.message("Only one ATS can be added per flow.");
+      return;
+    }
+    const tid = src.templateId;
+    if (!atsTemplatesById[tid]) return;
+    const nid = newId();
+    const node: AtsFlowNodeState = {
+      templateId: tid,
+      copiedFromTemplateId: tid,
+      events: JSON.parse(JSON.stringify(src.events)) as AtsFlowNodeState["events"],
+      s2sEventSource: src.s2sEventSource,
+      s2sTestStatus: src.s2sTestStatus ?? "not_tested",
+    };
+    setAtsFlowNodesById((prev) => ({ ...prev, [nid]: node }));
+    updateFlow(flowId, (f) => ({ ...f, atsIds: [...f.atsIds, nid] }));
+    setSelection({ kind: "ats", flowId, atsId: nid });
+    toast.message("Copied ATS tracking into this flow.");
+    markDirty();
+  };
+
+  const removeAtsFromFlow = (flowId: string, atsNodeId: string) => {
+    const nextFlows = flows.map((f) =>
+      f.id === flowId ? { ...f, atsIds: f.atsIds.filter((id) => id !== atsNodeId) } : f,
+    );
+    const { [atsNodeId]: _, ...nextNodes } = atsFlowNodesById;
+    const nextTemplates = pruneAtsTemplatesForFlows(nextFlows, nextNodes, atsTemplatesById);
+    setFlows(nextFlows);
+    setAtsFlowNodesById(nextNodes);
+    setAtsTemplatesById(nextTemplates);
+    setEventOwnershipResolution((m) => filterResolutionKeysForAtsNode(m, atsNodeId));
     setSelection({ kind: "flow", flowId });
     markDirty();
   };
 
   const addFlow = () => {
     const n = flows.length + 1;
-    const flow: FlowState = { id: newId(), name: `Flow ${n}`, careerSiteId: null, atsIds: [] };
+    const flow: FlowState = {
+      id: newId(),
+      name: `Flow ${n}`,
+      nameMode: "auto",
+      careerFlowNodeId: null,
+      atsIds: [],
+    };
     setFlows((prev) => [...prev, flow]);
     setSelection({ kind: "flow", flowId: flow.id });
     markDirty();
@@ -1595,14 +2207,50 @@ export function ConfigureTrackingSetup({
     const flow = flows.find((f) => f.id === flowId);
     if (!flow) return;
     const n = flows.length + 1;
+    const clonedFlowId = newId();
+
+    let newCareerNodeId: string | null = null;
+    if (flow.careerFlowNodeId) {
+      const oldNode = careerFlowNodesById[flow.careerFlowNodeId];
+      if (oldNode) {
+        const clonedCareerNodeId = newId();
+        newCareerNodeId = clonedCareerNodeId;
+        setCareerFlowNodesById((p) => ({
+          ...p,
+          [clonedCareerNodeId]: (() => {
+            const c = JSON.parse(JSON.stringify(oldNode)) as CareerFlowNodeState;
+            delete c.funnelOwnershipReviewActive;
+            delete c.copiedReuseHintDismissed;
+            return c;
+          })(),
+        }));
+      }
+    }
+
+    const newAtsIds: string[] = [];
+    const atsAdditions: Record<string, AtsFlowNodeState> = {};
+    for (const aid of flow.atsIds) {
+      const oldAts = atsFlowNodesById[aid];
+      if (!oldAts) continue;
+      const nid = newId();
+      newAtsIds.push(nid);
+      const clonedAts = JSON.parse(JSON.stringify(oldAts)) as AtsFlowNodeState;
+      delete clonedAts.copiedReuseHintDismissed;
+      atsAdditions[nid] = clonedAts;
+    }
+    if (Object.keys(atsAdditions).length > 0) {
+      setAtsFlowNodesById((p) => ({ ...p, ...atsAdditions }));
+    }
+
     const cloned: FlowState = {
-      id: newId(),
+      id: clonedFlowId,
       name: `Flow ${n}`,
-      careerSiteId: flow.careerSiteId,
-      atsIds: [...flow.atsIds],
+      nameMode: "auto",
+      careerFlowNodeId: newCareerNodeId,
+      atsIds: newAtsIds,
     };
     setFlows((prev) => [...prev, cloned]);
-    setSelection({ kind: "flow", flowId: cloned.id });
+    setSelection({ kind: "flow", flowId: clonedFlowId });
     toast.message("Flow duplicated.");
     markDirty();
   };
@@ -1619,27 +2267,23 @@ export function ConfigureTrackingSetup({
     }
     const removed = flows.find((f) => f.id === flowId);
     const nextFlows = flows.filter((f) => f.id !== flowId);
-    const orphaned = removed?.careerSiteId;
-    if (orphaned && !nextFlows.some((f) => f.careerSiteId === orphaned)) {
-      setCareerSiteById((cat) => {
-        const { [orphaned]: _, ...rest } = cat;
+    const careerNid = removed?.careerFlowNodeId;
+    if (careerNid) {
+      setCareerFlowNodesById((cat) => {
+        const { [careerNid]: _, ...rest } = cat;
         return rest;
       });
     }
     const removedAts = removed?.atsIds ?? [];
-    if (removedAts.length > 0) {
-      setAtsById((cat) => {
-        let next = { ...cat };
-        for (const aid of removedAts) {
-          if (!nextFlows.some((f) => f.atsIds.includes(aid))) {
-            const { [aid]: _, ...rest } = next;
-            next = rest;
-          }
-        }
-        return next;
-      });
+    let nextAtsNodes = { ...atsFlowNodesById };
+    for (const aid of removedAts) {
+      delete nextAtsNodes[aid];
     }
+    const nextAtsTemplates = pruneAtsTemplatesForFlows(nextFlows, nextAtsNodes, atsTemplatesById);
     setFlows(nextFlows);
+    setAtsFlowNodesById(nextAtsNodes);
+    setAtsTemplatesById(nextAtsTemplates);
+    setEventOwnershipResolution((m) => filterResolutionKeysForFlow(m, flowId));
     if (selection?.flowId === flowId) {
       setSelection({ kind: "flow", flowId: nextFlows[0]!.id });
     }
@@ -1662,8 +2306,11 @@ export function ConfigureTrackingSetup({
     clearDraft();
     setArchitecture("pixel");
     setFlows(initialFlows());
-    setCareerSiteById({});
-    setAtsById({});
+    setCareerTemplatesById({});
+    setCareerFlowNodesById({});
+    setAtsFlowNodesById({});
+    setAtsTemplatesById({});
+    setEventOwnershipResolution({});
     setCareerSiteSerial(1);
     setSelection(null);
     setDirty(false);
@@ -1680,8 +2327,11 @@ export function ConfigureTrackingSetup({
     saveMode({ mode: "firstTime" });
     setArchitecture("pixel");
     setFlows(initialFlows());
-    setCareerSiteById({});
-    setAtsById({});
+    setCareerTemplatesById({});
+    setCareerFlowNodesById({});
+    setAtsFlowNodesById({});
+    setAtsTemplatesById({});
+    setEventOwnershipResolution({});
     setCareerSiteSerial(1);
     setSelection(null);
     setDirty(false);
@@ -1728,6 +2378,10 @@ export function ConfigureTrackingSetup({
     goToFirstStepper();
   };
 
+  const exitFromLaunchScreen = () => {
+    void navigate({ to: "/" });
+  };
+
   const confirmExitDiscard = () => {
     setExitOpen(false);
     if (liveEditing) {
@@ -1766,8 +2420,11 @@ export function ConfigureTrackingSetup({
     }
     setArchitecture("pixel");
     setFlows(initialFlows());
-    setCareerSiteById({});
-    setAtsById({});
+    setCareerTemplatesById({});
+    setCareerFlowNodesById({});
+    setAtsFlowNodesById({});
+    setAtsTemplatesById({});
+    setEventOwnershipResolution({});
     setCareerSiteSerial(1);
     setSelection(null);
     setLifecycleMode("wizard");
@@ -1778,21 +2435,33 @@ export function ConfigureTrackingSetup({
 
   const catalogEntries = React.useMemo(
     () =>
-      Object.entries(careerSiteById).map(([id, cs]) => ({
+      Object.entries(careerTemplatesById).map(([id, t]) => ({
         id,
-        name: cs.name.trim() || "Untitled career site",
+        name: t.name.trim() || "Untitled career site",
       })),
-    [careerSiteById],
+    [careerTemplatesById],
   );
 
   const resolveCareer = (f: FlowState): CareerSiteState | null => {
-    if (!f.careerSiteId) return null;
-    return careerSiteById[f.careerSiteId] ?? null;
+    const nid = f.careerFlowNodeId;
+    if (!nid) return null;
+    const node = careerFlowNodesById[nid];
+    const tmpl = node ? careerTemplatesById[node.templateId] : null;
+    if (!node || !tmpl) return null;
+    return mergeCareerTemplateAndNode(tmpl, node);
   };
 
   const reviewBlockersList = React.useMemo(
-    () => reviewBlockers(flows, careerSiteById, atsById, architecture),
-    [flows, careerSiteById, atsById, architecture],
+    () =>
+      reviewBlockers(
+        flows,
+        careerTemplatesById,
+        careerFlowNodesById,
+        atsTemplatesById,
+        atsFlowNodesById,
+        architecture,
+      ),
+    [flows, careerTemplatesById, careerFlowNodesById, atsTemplatesById, atsFlowNodesById, architecture],
   );
 
   React.useEffect(() => {
@@ -1801,7 +2470,7 @@ export function ConfigureTrackingSetup({
 
   if (stage === 1) {
     return (
-      <div className="flex h-full min-h-0 flex-1 flex-col overflow-y-auto p-6">
+      <div className="flex h-full min-h-0 flex-1 flex-col overflow-y-auto bg-[color:var(--figma-gray-bg-04)] p-6">
         <div className="mx-auto w-full max-w-[1136px] rounded-lg border border-[color:var(--figma-gray-border-02)] bg-white p-8 shadow-[0_1px_3px_rgba(0,0,0,0.1),0_1px_2px_rgba(0,0,0,0.06)]">
           <SetupStepper stage={1} onGoToStage={(s) => setStage(s)} />
           <div className="mt-5 w-full border-t border-[color:var(--figma-gray-border-02)]" />
@@ -1827,11 +2496,18 @@ export function ConfigureTrackingSetup({
                 className={cn(
                   "flex gap-4 rounded-lg border-2 p-5 text-left transition-colors",
                   architecture === "pixel"
-                    ? "border-[color:var(--figma-secondary-main)] bg-[color:var(--figma-secondary-lighter)]"
+                    ? "border-[color:var(--figma-secondary-main)] bg-[color:var(--figma-gray-bg-04)]"
                     : "border-[color:var(--figma-gray-border-02)] bg-white hover:border-[color:var(--figma-gray-border-03)]",
                 )}
               >
-                <div className="flex size-11 shrink-0 items-center justify-center rounded-lg bg-[color:var(--figma-gray-bg-03)]">
+                <div
+                  className={cn(
+                    "flex size-11 shrink-0 items-center justify-center rounded-lg transition-colors",
+                    architecture === "pixel"
+                      ? "bg-[color:var(--figma-secondary-lighter)]"
+                      : "bg-[color:var(--figma-gray-bg-03)]",
+                  )}
+                >
                   <Monitor
                     className={cn(
                       "size-6",
@@ -1867,11 +2543,18 @@ export function ConfigureTrackingSetup({
                 className={cn(
                   "flex gap-4 rounded-lg border-2 p-5 text-left transition-colors",
                   architecture === "s2s"
-                    ? "border-[color:var(--figma-secondary-main)] bg-[color:var(--figma-secondary-lighter)]"
+                    ? "border-[color:var(--figma-secondary-main)] bg-[color:var(--figma-gray-bg-04)]"
                     : "border-[color:var(--figma-gray-border-02)] bg-white hover:border-[color:var(--figma-gray-border-03)]",
                 )}
               >
-                <div className="flex size-11 shrink-0 items-center justify-center rounded-lg bg-[color:var(--figma-gray-bg-03)]">
+                <div
+                  className={cn(
+                    "flex size-11 shrink-0 items-center justify-center rounded-lg transition-colors",
+                    architecture === "s2s"
+                      ? "bg-[color:var(--figma-secondary-lighter)]"
+                      : "bg-[color:var(--figma-gray-bg-03)]",
+                  )}
+                >
                   <Server
                     className={cn(
                       "size-6",
@@ -1924,8 +2607,10 @@ export function ConfigureTrackingSetup({
         <ReviewTrackingStage
           architecture={architecture}
           flows={flows}
-          careerSiteById={careerSiteById}
-          atsById={atsById}
+          careerTemplatesById={careerTemplatesById}
+          careerFlowNodesById={careerFlowNodesById}
+          atsTemplatesById={atsTemplatesById}
+          atsFlowNodesById={atsFlowNodesById}
           reviewEnabled={reviewEnabled}
           blockers={reviewBlockersList}
           diffLines={liveDiffLines}
@@ -1940,6 +2625,8 @@ export function ConfigureTrackingSetup({
             clearDraft();
             setLiveSnapshot(cloneSnapshot({ ...snap, wizardStage: 4 }));
             setLifecycleMode("wizard");
+            setLaunchSuccessContext("initial");
+            setDirty(false);
             setStage(4);
             toast.success("Setup launched.");
           }}
@@ -1947,11 +2634,13 @@ export function ConfigureTrackingSetup({
             isLivePublish
               ? () => {
                   const snap = buildSnapshot();
-                  saveLive({ ...snap, wizardStage: 2 }, { mode: "live" });
-                  setLiveSnapshot(cloneSnapshot(snap));
+                  saveLive({ ...snap, wizardStage: 4 }, { mode: "live" });
+                  setLiveSnapshot(cloneSnapshot({ ...snap, wizardStage: 4 }));
                   setWorkingCopy(null);
                   setLifecycleMode("liveReadOnly");
-                  setStage(2);
+                  setLaunchSuccessContext("afterPublish");
+                  setDirty(false);
+                  setStage(4);
                   toast.success("Changes published successfully");
                 }
               : undefined
@@ -1978,12 +2667,22 @@ export function ConfigureTrackingSetup({
         <LaunchTrackingStage
           architecture={architecture}
           flowsCount={flows.length}
-          careerSitesCount={Object.keys(careerSiteById).length}
-          atsCount={Object.keys(atsById).length}
-          defaultEventsEnabled={countEnabledDefaultEvents(careerSiteById, atsById)}
-          customEventsCount={countCustomEventsDefined(careerSiteById, atsById)}
-          customEventsEnabledCount={countEnabledCustomEventsGlobally(careerSiteById, atsById)}
-          onExitForNow={requestExit}
+          careerSitesCount={Object.keys(careerTemplatesById).length}
+          atsCount={Object.keys(atsTemplatesById).length}
+          defaultEventsEnabled={countEnabledDefaultEventsFromFlowNodes(
+            careerFlowNodesById,
+            atsFlowNodesById,
+          )}
+          customEventsCount={countCustomEventsDefinedFromFlowNodes(
+            careerFlowNodesById,
+            atsFlowNodesById,
+          )}
+          customEventsEnabledCount={countEnabledCustomEventsFromFlowNodes(
+            careerFlowNodesById,
+            atsFlowNodesById,
+          )}
+          launchContext={launchSuccessContext}
+          onExitForNow={exitFromLaunchScreen}
           onGoToInstallationGuide={() => {
             void navigate({ to: "/installation-guide" });
           }}
@@ -2016,6 +2715,17 @@ export function ConfigureTrackingSetup({
               disableNavigation={readOnlySetup}
             />
           </div>
+          {liveEditing ? (
+            <div className="border-t border-[color:var(--figma-gray-border-02)] bg-[color:var(--figma-warning-lighter)]/35 px-6 py-2.5">
+              <p className="text-sm leading-5 text-[color:var(--figma-gray-text-05)]">
+                <span className="font-semibold">Editing live setup</span>
+                <span className="font-normal text-[color:var(--figma-gray-text-04)]">
+                  {" "}
+                  — Changes will not affect the live setup until you publish them.
+                </span>
+              </p>
+            </div>
+          ) : null}
           <div className="w-full border-t border-[color:var(--figma-gray-border-02)]" />
           <div className="flex flex-nowrap items-center justify-between gap-4 overflow-x-auto px-6 py-4">
             <div>
@@ -2106,17 +2816,6 @@ export function ConfigureTrackingSetup({
           </div>
         </div>
 
-        {liveEditing ? (
-          <div className="shrink-0 border-b border-[color:var(--figma-gray-border-02)] bg-[color:var(--figma-warning-lighter)]/35 px-6 py-3">
-            <p className="text-sm font-semibold text-[color:var(--figma-gray-text-05)]">
-              Editing live setup
-            </p>
-            <p className="mt-1 text-xs text-[color:var(--figma-gray-text-04)]">
-              Changes will not affect the live setup until you publish them.
-            </p>
-          </div>
-        ) : null}
-
         {lifecycleMode === "draftRestored" ? (
           <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-[color:var(--figma-gray-border-02)] bg-[color:var(--figma-secondary-lighter)]/35 px-6 py-3">
             <p className="text-sm text-[color:var(--figma-gray-text-04)]">
@@ -2139,7 +2838,7 @@ export function ConfigureTrackingSetup({
           </div>
         ) : null}
 
-        <div className="flex min-h-0 flex-1 overflow-hidden">
+        <div className="flex min-h-0 flex-1 overflow-hidden bg-[color:var(--figma-gray-bg-04)]">
           <div className="relative min-h-0 min-w-0 flex-[0_0_68%] overflow-hidden border-r border-[color:var(--figma-gray-border-02)]">
             <div
               ref={flowCanvasScrollRef}
@@ -2172,35 +2871,84 @@ export function ConfigureTrackingSetup({
                       <div key={flow.id} className="flex min-w-0 shrink-0 flex-col items-center">
                         <FlowCanvasColumn
                           flow={flow}
+                          flowReviewReady={isFlowReviewReady(
+                            flow,
+                            careerTemplatesById,
+                            careerFlowNodesById,
+                            atsTemplatesById,
+                            atsFlowNodesById,
+                            architecture,
+                          )}
                           career={resolveCareer(flow)}
+                          careerCopied={(() => {
+                            const nid = flow.careerFlowNodeId;
+                            if (!nid) return false;
+                            const n = careerFlowNodesById[nid];
+                            return showCopiedReuseHint(n?.copiedFromTemplateId, n?.copiedReuseHintDismissed);
+                          })()}
                           atsCards={flow.atsIds
                             .map((id) => {
-                              const a = atsById[id];
-                              return a ? { id, ats: a } : null;
+                              const node = atsFlowNodesById[id];
+                              const merged = mergedAtsFromMaps(
+                                id,
+                                atsFlowNodesById,
+                                atsTemplatesById,
+                              );
+                              if (!node || !merged) return null;
+                              return {
+                                id,
+                                displayAts: merged,
+                                copied: showCopiedReuseHint(
+                                  node.copiedFromTemplateId,
+                                  node.copiedReuseHintDismissed,
+                                ),
+                              };
                             })
-                            .filter((x): x is { id: string; ats: AtsState } => x !== null)}
+                            .filter(
+                              (x): x is {
+                                id: string;
+                                displayAts: AtsState;
+                                copied: boolean;
+                              } => x !== null,
+                            )}
                           catalogEntries={catalogEntries}
-                          catalogFull={Object.keys(careerSiteById).length >= 2}
+                          catalogFull={Object.keys(careerTemplatesById).length >= 2}
                           selection={selection}
                           onSelectFlow={() => selectFlow(flow.id)}
-                          onSelectCareer={() => flow.careerSiteId && selectCareerSite(flow.id)}
+                          onSelectCareer={() =>
+                            flow.careerFlowNodeId && selectCareerSite(flow.id)
+                          }
                           onSelectAts={(atsId) =>
                             setSelection({ kind: "ats", flowId: flow.id, atsId })
                           }
                           onCreateCareerSite={() => createCareerSiteForFlow(flow.id)}
-                          onAttachCareerSite={(careerId) =>
-                            attachCareerSiteToFlow(flow.id, careerId)
+                          onAttachCareerSite={(templateId) =>
+                            attachCareerSiteToFlow(flow.id, templateId)
                           }
-                          canCreateNewAtsTemplate={Object.keys(atsById).length < 2}
-                          attachableAtsForFlow={attachableAtsEntriesForFlow(flow, atsById)}
-                          onCreateNewAts={() => createNewAtsForFlow(flow.id)}
-                          onAttachAtsCatalog={(catalogId) => confirmReuseAts(flow.id, catalogId)}
-                          onRemoveAts={(atsCatalogId) => removeAtsFromFlow(flow.id, atsCatalogId)}
+                          canAddAts={flow.atsIds.length < atsLimitPerFlow}
+                          canCreateNewAtsTemplate={
+                            Object.keys(atsTemplatesById).length < atsTemplateLimit
+                          }
+                          atsTemplateOptions={atsTemplateCatalogEntries(atsTemplatesById)}
+                          atsCopySources={atsCopySourcesOtherFlows(
+                            flow.id,
+                            flows,
+                            atsFlowNodesById,
+                            atsTemplatesById,
+                          )}
+                          onCreateNewAtsTemplate={() => createNewAtsTemplateForFlow(flow.id)}
+                          onAttachAtsTemplate={(templateId) =>
+                            attachAtsTemplateToFlow(flow.id, templateId)
+                          }
+                          onCopyAtsFromFlow={(sourceNodeId) =>
+                            copyAtsNodeFromOtherFlow(flow.id, sourceNodeId)
+                          }
+                          onRemoveAts={(atsNodeId) => removeAtsFromFlow(flow.id, atsNodeId)}
                           onRemoveCareer={() => removeCareerSite(flow.id)}
                           onDuplicate={() => duplicateFlow(flow.id)}
                           onDelete={() => requestDeleteFlow(flow.id)}
                           allowDeleteFlow={flows.length > 1}
-                          onRename={(name) => updateFlow(flow.id, { name })}
+                          onRename={(name) => updateFlow(flow.id, { name, nameMode: "manual" })}
                           readOnly={readOnlySetup}
                           architecture={architecture}
                         />
@@ -2251,33 +2999,102 @@ export function ConfigureTrackingSetup({
             </div>
           </div>
 
-          <aside className="flex min-h-0 flex-[0_0_32%] flex-col overflow-hidden bg-white">
-            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+          <aside className="flex min-h-0 flex-[0_0_32%] flex-col overflow-hidden border-l border-[color:var(--figma-gray-border-02)] bg-white">
+            <div className="min-h-0 flex-1 overflow-y-auto bg-white p-6">
               {!ctx ? (
                 <p className="text-sm text-[color:var(--figma-gray-text-03)]">
                   Select a node on the canvas.
                 </p>
-              ) : ctx.selection.kind === "flow" ? (
+              ) : (
+                <>
+                  {ctx.selection.kind === "flow" ? (
                 <FlowSettingsPanel
                   flow={ctx.flow}
                   nodeCount={flowTrackingNodeCount(ctx.flow)}
-                  onNameChange={(name) => updateFlow(ctx.flow.id, { name })}
+                  suggestedAutoFlowName={buildAutoFlowName(
+                    { ...ctx.flow, nameMode: "auto" },
+                    Math.max(0, flows.findIndex((f) => f.id === ctx.flow.id)),
+                    careerFlowNodesById,
+                    careerTemplatesById,
+                    atsFlowNodesById,
+                    atsTemplatesById,
+                    architecture,
+                  )}
+                  onNameChange={(name) =>
+                    updateFlow(ctx.flow.id, { name, nameMode: "manual" })
+                  }
+                  onResetAutoFlowName={() => updateFlow(ctx.flow.id, { nameMode: "auto" })}
                   onDuplicate={() => duplicateFlow(ctx.flow.id)}
                   onDelete={() => requestDeleteFlow(ctx.flow.id)}
                   allowDeleteFlow={flows.length > 1}
                   readOnly={readOnlySetup}
                 />
               ) : ctx.selection.kind === "career" ? (
-                ctx.flow.careerSiteId && careerSiteById[ctx.flow.careerSiteId] ? (
-                  <CareerSitePanel
-                    career={careerSiteById[ctx.flow.careerSiteId]!}
-                    architecture={architecture}
-                    readOnly={readOnlySetup}
-                    careerSiteById={careerSiteById}
-                    atsById={atsById}
-                    onChange={(patch) => updateCareerSiteInCatalog(ctx.flow.careerSiteId!, patch)}
-                    onRemove={() => removeCareerSite(ctx.flow.id)}
-                  />
+                ctx.flow.careerFlowNodeId && careerFlowNodesById[ctx.flow.careerFlowNodeId] ? (
+                  (() => {
+                    const nid = ctx.flow.careerFlowNodeId!;
+                    const careerNode = careerFlowNodesById[nid]!;
+                    const firstAtsId = ctx.flow.atsIds[0] ?? null;
+                    const firstAtsNode = firstAtsId ? atsFlowNodesById[firstAtsId] : null;
+                    const firstAtsTmpl = firstAtsNode ? atsTemplatesById[firstAtsNode.templateId] : null;
+                    const mergedAts =
+                      firstAtsNode && firstAtsTmpl
+                        ? mergeAtsTemplateAndNode(firstAtsTmpl, firstAtsNode)
+                        : null;
+                    const ownershipPanel =
+                      mergedAts && firstAtsId
+                        ? getOwnershipConflictPanel(
+                            ctx.flow,
+                            nid,
+                            firstAtsId,
+                            mergedAts.vendor,
+                            mergedAts.events,
+                            eventOwnershipResolution,
+                          )
+                        : null;
+                    const ownershipRowByEventId = getCareerOwnershipRowMeta(
+                      ownershipPanel,
+                      mergedAts?.vendor ?? "ATS",
+                    );
+                    return (
+                      <CareerSitePanel
+                        career={mergeCareerTemplateAndNode(
+                          careerTemplatesById[careerNode.templateId]!,
+                          careerNode,
+                        )}
+                        architecture={architecture}
+                        readOnly={readOnlySetup}
+                        onChange={(patch) => {
+                          const node = careerFlowNodesById[nid];
+                          if (!node) return;
+                          const { name, baseUrl, ...rest } = patch;
+                          if (name !== undefined || baseUrl !== undefined) {
+                            const templatePatch: Partial<CareerSiteTemplate> = {};
+                            if (name !== undefined) templatePatch.name = name;
+                            if (baseUrl !== undefined) {
+                              templatePatch.baseUrl = baseUrl;
+                              if (architecture === "pixel") {
+                                const fallback =
+                                  node.defaultCareerSiteName?.trim() ||
+                                  careerTemplatesById[node.templateId]?.name?.trim() ||
+                                  "career site";
+                                templatePatch.name = careerTemplateNameFromBaseUrl(
+                                  baseUrl,
+                                  fallback,
+                                );
+                              }
+                            }
+                            updateCareerTemplate(node.templateId, templatePatch);
+                          }
+                          if (Object.keys(rest).length > 0) {
+                            updateCareerFlowNode(nid, rest as Partial<CareerFlowNodeState>);
+                          }
+                        }}
+                        onRemove={() => removeCareerSite(ctx.flow.id)}
+                        ownershipRowByEventId={ownershipRowByEventId}
+                      />
+                    );
+                  })()
                 ) : (
                   <p className="text-sm text-[color:var(--figma-gray-text-03)]">
                     Career site was removed. Select the flow or add a career site again.
@@ -2286,16 +3103,31 @@ export function ConfigureTrackingSetup({
               ) : ctx.selection.kind === "ats" ? (
                 (() => {
                   const sid = (ctx.selection as Extract<Selection, { kind: "ats" }>).atsId;
-                  const ats = atsById[sid];
-                  return ats ? (
+                  const node = atsFlowNodesById[sid];
+                  const tmpl = node ? atsTemplatesById[node.templateId] : null;
+                  return node && tmpl ? (
                     <AtsConfigurationPanel
-                      ats={ats}
-                      atsCatalogId={sid}
-                      atsById={atsById}
-                      careerSiteById={careerSiteById}
+                      ats={mergeAtsTemplateAndNode(tmpl, node)}
+                      atsNodeId={sid}
+                      flow={ctx.flow}
+                      atsFlowNodesById={atsFlowNodesById}
+                      careerFlowNodesById={careerFlowNodesById}
+                      atsTemplatesById={atsTemplatesById}
                       architecture={architecture}
                       readOnly={readOnlySetup}
-                      onChange={(patch) => updateAtsInCatalog(sid, patch)}
+                      eventOwnershipResolution={eventOwnershipResolution}
+                      onChange={(patch) => {
+                        const { vendor, endpointUrl, ...rest } = patch;
+                        if (vendor !== undefined || endpointUrl !== undefined) {
+                          updateAtsTemplate(node.templateId, {
+                            ...(vendor !== undefined ? { vendor } : {}),
+                            ...(endpointUrl !== undefined ? { endpointUrl } : {}),
+                          });
+                        }
+                        if (Object.keys(rest).length > 0) {
+                          updateAtsFlowNode(sid, rest as Partial<AtsFlowNodeState>);
+                        }
+                      }}
                       onRemove={() => removeAtsFromFlow(ctx.flow.id, sid)}
                     />
                   ) : (
@@ -2305,6 +3137,8 @@ export function ConfigureTrackingSetup({
                   );
                 })()
               ) : null}
+                </>
+              )}
             </div>
           </aside>
         </div>
@@ -2506,7 +3340,7 @@ function AddCareerSiteDropdown({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-72 p-2">
-        <FlowCatalogDropdownInfoBanner message="Maximum 2 career sites allowed. You can reuse an existing career site added in the flow." />
+        <FlowCatalogDropdownInfoBanner message="Maximum 2 unique career sites allowed. You can still reuse an existing career site on another flow." />
         <DropdownMenuSeparator />
         <DropdownMenuItem
           disabled={catalogFull}
@@ -2571,27 +3405,33 @@ function FlowAtsRow({
   onSelectAts,
   onRemoveAts,
   readOnly,
+  canAddAts,
   canCreateNewAtsTemplate,
-  attachableAts,
-  onCreateNewAts,
-  onAttachAtsCatalog,
+  atsTemplateOptions,
+  atsCopySources,
+  onCreateNewAtsTemplate,
+  onAttachAtsTemplate,
+  onCopyAtsFromFlow,
   architecture,
 }: {
   flowId: string;
-  atsCards: { id: string; ats: AtsState }[];
+  atsCards: { id: string; displayAts: AtsState; copied: boolean }[];
   selection: Selection | null;
   onSelectAts: (atsId: string) => void;
   onRemoveAts: (atsCatalogId: string) => void;
   readOnly?: boolean;
+  canAddAts: boolean;
   canCreateNewAtsTemplate: boolean;
-  attachableAts: { id: string; vendor: string }[];
-  onCreateNewAts: () => void;
-  onAttachAtsCatalog: (catalogId: string) => void;
+  atsTemplateOptions: { templateId: string; label: string }[];
+  atsCopySources: { sourceNodeId: string; flowName: string; vendor: string }[];
+  onCreateNewAtsTemplate: () => void;
+  onAttachAtsTemplate: (templateId: string) => void;
+  onCopyAtsFromFlow: (sourceNodeId: string) => void;
   architecture: Architecture;
 }) {
   return (
     <div className="flex flex-row flex-nowrap items-start justify-center gap-2">
-      {atsCards.map(({ id, ats }) => {
+      {atsCards.map(({ id, displayAts: ats, copied }) => {
         const atsSelected =
           selection?.kind === "ats" && selection.flowId === flowId && selection.atsId === id;
         const atsOk = isAtsTrackingComplete(ats, architecture);
@@ -2604,12 +3444,12 @@ function FlowAtsRow({
               onSelectAts(id);
             }}
             className={cn(
-              "w-[230px] shrink-0 rounded-lg border-2 bg-white p-3 text-left shadow-[0_1px_3px_rgba(0,0,0,0.08)] transition-all",
-              atsSelected && !atsOk
-                ? "border-[color:var(--figma-error-main)]"
-                : atsSelected
-                  ? "border-[color:var(--figma-secondary-main)]"
-                  : "border-[color:var(--figma-gray-border-02)] hover:border-[color:var(--figma-secondary-main)]",
+              "w-[230px] shrink-0 rounded-lg border-2 bg-white p-3 text-left shadow-[0_1px_3px_rgba(0,0,0,0.08)] transition-colors",
+              !atsOk && "border-[color:var(--figma-error-main)]",
+              atsOk && atsSelected && "border-[color:var(--figma-secondary-main)]",
+              atsOk &&
+                !atsSelected &&
+                "border-[color:var(--figma-success-main)] hover:border-[color:var(--figma-secondary-main)]",
             )}
           >
             <div className="flex items-start justify-between gap-2">
@@ -2653,6 +3493,11 @@ function FlowAtsRow({
                 ))
               )}
             </div>
+            {copied ? (
+              <p className="mt-1.5 text-xs text-[color:var(--figma-gray-text-03)]">
+                Copied
+              </p>
+            ) : null}
             {!atsOk ? (
               <div className="mt-2 flex items-center gap-1.5 text-xs text-[color:var(--figma-error-main)]">
                 <AlertCircle className="size-3.5 shrink-0" strokeWidth={2} />
@@ -2665,10 +3510,13 @@ function FlowAtsRow({
       {atsCards.length < atsLimitPerFlow ? (
         <AddAtsToFlowControl
           readOnly={readOnly}
+          canAddAts={canAddAts}
           canCreateNewTemplate={canCreateNewAtsTemplate}
-          attachable={attachableAts}
-          onCreateNew={onCreateNewAts}
-          onAttach={onAttachAtsCatalog}
+          templateOptions={atsTemplateOptions}
+          copySources={atsCopySources}
+          onCreateNewTemplate={onCreateNewAtsTemplate}
+          onAttachTemplate={onAttachAtsTemplate}
+          onCopyFromSource={onCopyAtsFromFlow}
           variant="tile"
           triggerClassName={cn(
             DASHED_FLOW_CTA_TILE_CLASS,
@@ -2682,7 +3530,9 @@ function FlowAtsRow({
 
 function FlowCanvasColumn({
   flow,
+  flowReviewReady,
   career,
+  careerCopied,
   atsCards,
   catalogEntries,
   catalogFull,
@@ -2692,10 +3542,13 @@ function FlowCanvasColumn({
   onSelectAts,
   onCreateCareerSite,
   onAttachCareerSite,
+  canAddAts,
   canCreateNewAtsTemplate,
-  attachableAtsForFlow,
-  onCreateNewAts,
-  onAttachAtsCatalog,
+  atsTemplateOptions,
+  atsCopySources,
+  onCreateNewAtsTemplate,
+  onAttachAtsTemplate,
+  onCopyAtsFromFlow,
   onRemoveAts,
   onRemoveCareer,
   onDuplicate,
@@ -2706,8 +3559,10 @@ function FlowCanvasColumn({
   architecture,
 }: {
   flow: FlowState;
+  flowReviewReady: boolean;
   career: CareerSiteState | null;
-  atsCards: { id: string; ats: AtsState }[];
+  careerCopied: boolean;
+  atsCards: { id: string; displayAts: AtsState; copied: boolean }[];
   catalogEntries: { id: string; name: string }[];
   catalogFull: boolean;
   selection: Selection | null;
@@ -2715,12 +3570,15 @@ function FlowCanvasColumn({
   onSelectCareer: () => void;
   onSelectAts: (atsId: string) => void;
   onCreateCareerSite: () => void;
-  onAttachCareerSite: (careerId: string) => void;
+  onAttachCareerSite: (templateId: string) => void;
+  canAddAts: boolean;
   canCreateNewAtsTemplate: boolean;
-  attachableAtsForFlow: { id: string; vendor: string }[];
-  onCreateNewAts: () => void;
-  onAttachAtsCatalog: (catalogId: string) => void;
-  onRemoveAts: (atsCatalogId: string) => void;
+  atsTemplateOptions: { templateId: string; label: string }[];
+  atsCopySources: { sourceNodeId: string; flowName: string; vendor: string }[];
+  onCreateNewAtsTemplate: () => void;
+  onAttachAtsTemplate: (templateId: string) => void;
+  onCopyAtsFromFlow: (sourceNodeId: string) => void;
+  onRemoveAts: (atsNodeId: string) => void;
   onRemoveCareer: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
@@ -2732,11 +3590,15 @@ function FlowCanvasColumn({
   const flowSelected = selection?.kind === "flow" && selection.flowId === flow.id;
   const careerSelected = selection?.kind === "career" && selection.flowId === flow.id;
   const trackingComplete = career ? isCareerTrackingComplete(career, architecture) : true;
+  const hasTrackingNodes = Boolean(flow.careerFlowNodeId || flow.atsIds.length > 0);
+  const flowNameOk = Boolean(flow.name.trim());
+  const flowCardError = !flowNameOk;
+  const flowCardSuccess = flowNameOk && hasTrackingNodes && flowReviewReady;
   const n = flowTrackingNodeCount(flow);
   const nodeLabel = n === 1 ? "1 node" : `${n} nodes`;
   const cname = career ? career.name.trim() || "Career site" : "";
   const atsCount = flow.atsIds.length;
-  const firstVendor = (atsCards[0]?.ats.vendor ?? "").trim() || "ATS";
+  const firstVendor = (atsCards[0]?.displayAts.vendor ?? "").trim() || "ATS";
   const flowSummaryLine =
     career && atsCount === 0
       ? cname
@@ -2762,10 +3624,18 @@ function FlowCanvasColumn({
           }
         }}
         className={cn(
-          "w-[220px] rounded-lg border-2 bg-white p-3 shadow-[0_1px_3px_rgba(0,0,0,0.08)] transition-shadow",
-          flowSelected
-            ? "border-[color:var(--figma-secondary-main)]"
-            : "border-[color:var(--figma-gray-border-02)]",
+          "w-[220px] rounded-lg border-2 bg-white p-3 shadow-[0_1px_3px_rgba(0,0,0,0.08)] transition-colors",
+          flowCardError && "border-[color:var(--figma-error-main)]",
+          !flowCardError && flowSelected && "border-[color:var(--figma-secondary-main)]",
+          !flowCardError &&
+            !flowSelected &&
+            flowCardSuccess &&
+            "border-[color:var(--figma-success-main)]",
+          !flowCardError &&
+            !flowSelected &&
+            !flowCardSuccess &&
+            "border-[color:var(--figma-gray-border-02)]",
+          !flowCardError && !flowSelected && "hover:border-[color:var(--figma-secondary-main)]",
         )}
       >
         <div className="flex items-center justify-between gap-2">
@@ -2776,8 +3646,14 @@ function FlowCanvasColumn({
               disabled={readOnly}
               onChange={(e) => onRename(e.target.value)}
               onClick={(e) => e.stopPropagation()}
+              aria-invalid={!flowNameOk}
               className="min-w-0 flex-1 truncate border-none bg-transparent text-sm font-semibold text-[color:var(--figma-gray-text-05)] outline-none focus:ring-0 disabled:opacity-60"
             />
+            {(flow.nameMode ?? "auto") === "manual" ? (
+              <span className="shrink-0 rounded border border-[color:var(--figma-gray-border-03)] px-1 py-0.5 text-[9px] font-medium uppercase tracking-wide text-[color:var(--figma-gray-text-03)]">
+                Custom
+              </span>
+            ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
             <Tooltip>
@@ -2844,10 +3720,13 @@ function FlowCanvasColumn({
           />
           <AddAtsToFlowControl
             readOnly={readOnly}
+            canAddAts={canAddAts}
             canCreateNewTemplate={canCreateNewAtsTemplate}
-            attachable={attachableAtsForFlow}
-            onCreateNew={onCreateNewAts}
-            onAttach={onAttachAtsCatalog}
+            templateOptions={atsTemplateOptions}
+            copySources={atsCopySources}
+            onCreateNewTemplate={onCreateNewAtsTemplate}
+            onAttachTemplate={onAttachAtsTemplate}
+            onCopyFromSource={onCopyAtsFromFlow}
             variant="row"
             triggerClassName={cn(
               DASHED_FLOW_CTA_ROW_CLASS,
@@ -2866,12 +3745,21 @@ function FlowCanvasColumn({
               onSelectCareer();
             }}
             className={cn(
-              "w-[220px] rounded-lg border-2 bg-white p-3 text-left shadow-[0_1px_3px_rgba(0,0,0,0.08)] transition-all",
-              careerSelected
-                ? "border-[color:var(--figma-success-main)]"
-                : "border-[color:var(--figma-gray-border-02)] hover:border-[color:var(--figma-success-main)] hover:shadow-md",
+              "w-[220px] rounded-lg border-2 bg-white p-3 text-left shadow-[0_1px_3px_rgba(0,0,0,0.08)] transition-colors",
+              !trackingComplete && "border-[color:var(--figma-error-main)]",
+              trackingComplete &&
+                careerSelected &&
+                "border-[color:var(--figma-secondary-main)]",
+              trackingComplete &&
+                !careerSelected &&
+                "border-[color:var(--figma-success-main)] hover:border-[color:var(--figma-secondary-main)] hover:shadow-md",
             )}
           >
+            {careerCopied ? (
+              <p className="mb-2 text-xs text-[color:var(--figma-gray-text-03)]">
+                Copied
+              </p>
+            ) : null}
             <div className="flex items-start justify-between gap-2">
               <span className="text-sm font-semibold text-[color:var(--figma-gray-text-05)]">
                 {career.name}
@@ -2933,10 +3821,13 @@ function FlowCanvasColumn({
             onSelectAts={onSelectAts}
             onRemoveAts={onRemoveAts}
             readOnly={readOnly}
+            canAddAts={canAddAts}
             canCreateNewAtsTemplate={canCreateNewAtsTemplate}
-            attachableAts={attachableAtsForFlow}
-            onCreateNewAts={onCreateNewAts}
-            onAttachAtsCatalog={onAttachAtsCatalog}
+            atsTemplateOptions={atsTemplateOptions}
+            atsCopySources={atsCopySources}
+            onCreateNewAtsTemplate={onCreateNewAtsTemplate}
+            onAttachAtsTemplate={onAttachAtsTemplate}
+            onCopyAtsFromFlow={onCopyAtsFromFlow}
             architecture={architecture}
           />
         </>
@@ -2961,10 +3852,13 @@ function FlowCanvasColumn({
             onSelectAts={onSelectAts}
             onRemoveAts={onRemoveAts}
             readOnly={readOnly}
+            canAddAts={canAddAts}
             canCreateNewAtsTemplate={canCreateNewAtsTemplate}
-            attachableAts={attachableAtsForFlow}
-            onCreateNewAts={onCreateNewAts}
-            onAttachAtsCatalog={onAttachAtsCatalog}
+            atsTemplateOptions={atsTemplateOptions}
+            atsCopySources={atsCopySources}
+            onCreateNewAtsTemplate={onCreateNewAtsTemplate}
+            onAttachAtsTemplate={onAttachAtsTemplate}
+            onCopyAtsFromFlow={onCopyAtsFromFlow}
             architecture={architecture}
           />
         </>
@@ -2973,10 +3867,20 @@ function FlowCanvasColumn({
   );
 }
 
+/** Figma 373:25696 — greyish outlined form region in the configure side panel */
+const CONFIGURE_SIDE_FORM_SHELL =
+  "rounded-lg border border-[color:var(--figma-gray-border-02)] bg-[color:var(--figma-gray-bg-01)] p-4 shadow-[0_1px_2px_rgba(0,0,0,0.04)]";
+
+/** Figma 373:25699 — nested white “Tracking configuration” block */
+const CONFIGURE_SIDE_TRACKING_NEST =
+  "rounded-lg bg-white p-3 shadow-[0_1px_2px_rgba(0,0,0,0.04)]";
+
 function FlowSettingsPanel({
   flow,
   nodeCount,
+  suggestedAutoFlowName,
   onNameChange,
+  onResetAutoFlowName,
   onDuplicate,
   onDelete,
   allowDeleteFlow,
@@ -2984,16 +3888,19 @@ function FlowSettingsPanel({
 }: {
   flow: FlowState;
   nodeCount: number;
+  suggestedAutoFlowName: string;
   onNameChange: (name: string) => void;
+  onResetAutoFlowName: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
   allowDeleteFlow: boolean;
   readOnly?: boolean;
 }) {
+  const isManualName = (flow.nameMode ?? "auto") === "manual";
   return (
-    <div className="space-y-4">
+    <div className="flex min-h-0 flex-1 flex-col gap-6">
       <div className="flex items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold text-[color:var(--figma-gray-text-05)]">
+        <h2 className="text-base font-medium leading-6 text-[color:var(--figma-gray-text-05)]">
           Flow settings
         </h2>
         <div className="flex items-center gap-1">
@@ -3031,32 +3938,72 @@ function FlowSettingsPanel({
           </Button>
         </div>
       </div>
-      <div className="space-y-2">
-        <Label htmlFor={`flow-name-${flow.id}`}>
-          Flow name <span className="text-[color:var(--figma-error-main)]">*</span>
-        </Label>
-        <Input
-          id={`flow-name-${flow.id}`}
-          value={flow.name}
-          disabled={readOnly}
-          onChange={(e) => onNameChange(e.target.value)}
-        />
-      </div>
-      <Badge
-        variant="secondary"
-        className="bg-[color:var(--figma-gray-bg-05)] font-medium text-[color:var(--figma-gray-text-04)]"
-      >
-        {nodeCount} nodes
-      </Badge>
-      <div className="space-y-1 text-sm text-[color:var(--figma-gray-text-04)]">
-        <p>
-          <span className="font-semibold text-[color:var(--figma-gray-text-05)]">Career site:</span>{" "}
-          {flow.careerSiteId ? 1 : 0}
-        </p>
-        <p>
-          <span className="font-semibold text-[color:var(--figma-gray-text-05)]">ATS:</span>{" "}
-          {flow.atsIds.length}
-        </p>
+      <div className={CONFIGURE_SIDE_FORM_SHELL}>
+        <div className="flex flex-col gap-5">
+          <div className="space-y-2">
+            <FieldInput
+              id={`flow-name-${flow.id}`}
+              label="Flow name"
+              required
+              labelTrailing={
+                isManualName ? (
+                  <Badge
+                    variant="outline"
+                    className="border-[color:var(--figma-gray-border-03)] text-[10px] font-medium text-[color:var(--figma-gray-text-03)]"
+                  >
+                    Custom name
+                  </Badge>
+                ) : null
+              }
+              value={flow.name}
+              disabled={readOnly}
+              onChange={(e) => onNameChange(e.target.value)}
+              className={cn(!flow.name.trim() && "border-[color:var(--figma-error-main)]")}
+              aria-invalid={!flow.name.trim()}
+              error={!flow.name.trim() ? "Flow name is required." : undefined}
+            />
+            {isManualName ? (
+              <div className="flex flex-col gap-1.5">
+                <p className="text-xs text-[color:var(--figma-gray-text-03)]">
+                  Auto-generated from this setup:{" "}
+                  <span className="font-mono text-[color:var(--figma-gray-text-04)]">
+                    {suggestedAutoFlowName}
+                  </span>
+                </p>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 w-fit px-2 text-xs text-[color:var(--figma-secondary-main)]"
+                  disabled={readOnly}
+                  onClick={() => {
+                    if (!readOnly) onResetAutoFlowName();
+                  }}
+                >
+                  Reset to auto-name
+                </Button>
+              </div>
+            ) : null}
+          </div>
+          <Badge
+            variant="secondary"
+            className="w-fit bg-[color:var(--figma-gray-bg-05)] font-medium text-[color:var(--figma-gray-text-04)]"
+          >
+            {nodeCount} nodes
+          </Badge>
+          <div className="space-y-1 text-sm text-[color:var(--figma-gray-text-04)]">
+            <p>
+              <span className="font-semibold text-[color:var(--figma-gray-text-05)]">
+                Career site:
+              </span>{" "}
+              {flow.careerFlowNodeId ? 1 : 0}
+            </p>
+            <p>
+              <span className="font-semibold text-[color:var(--figma-gray-text-05)]">ATS:</span>{" "}
+              {flow.atsIds.length}
+            </p>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -3072,26 +4019,22 @@ function CareerSitePanel({
   career,
   architecture,
   readOnly,
-  careerSiteById,
-  atsById,
   onChange,
   onRemove,
+  ownershipRowByEventId,
 }: {
   career: CareerSiteState;
   architecture: Architecture;
   readOnly?: boolean;
-  careerSiteById: Record<string, CareerSiteState>;
-  atsById: Record<string, AtsState>;
   onChange: (patch: Partial<CareerSiteState>) => void;
   onRemove: () => void;
+  ownershipRowByEventId: Partial<Record<string, CareerRowOwnershipMeta>>;
 }) {
-  const globalCustomCount = countGlobalCustomEvents(careerSiteById, atsById);
-
   if (architecture === "s2s") {
     return (
-      <div className="space-y-5">
+      <div className="flex min-h-0 flex-1 flex-col gap-6">
         <div className="flex items-center justify-between gap-2">
-          <h2 className="text-lg font-semibold text-[color:var(--figma-gray-text-05)]">
+          <h2 className="text-base font-medium leading-6 text-[color:var(--figma-gray-text-05)]">
             Career Site Configuration
           </h2>
           <Button
@@ -3105,52 +4048,54 @@ function CareerSitePanel({
             <Trash2 className="size-4" />
           </Button>
         </div>
-        <div className="space-y-2">
-          <Label htmlFor="cs-name-s2s">
-            Career site name <span className="text-[color:var(--figma-error-main)]">*</span>
-          </Label>
-          <Input
-            id="cs-name-s2s"
-            value={career.name}
-            disabled={readOnly}
-            onChange={(e) => onChange({ name: e.target.value })}
-            className={cn(!career.name.trim() && "border-[color:var(--figma-error-main)]")}
-          />
+        <div className={CONFIGURE_SIDE_FORM_SHELL}>
+          <div className="flex flex-col gap-5">
+            <FieldInput
+              id="cs-name-s2s"
+              label="Career site name"
+              required
+              value={career.name}
+              disabled={readOnly}
+              onChange={(e) => onChange({ name: e.target.value })}
+              className={cn(!career.name.trim() && "border-[color:var(--figma-error-main)]")}
+            />
+            <FieldInput
+              id="cs-s2s-endpoint"
+              label="Endpoint URL"
+              required
+              placeholder="https://api.company.com/joveo/postback"
+              value={career.s2sEndpointUrl ?? ""}
+              disabled={readOnly}
+              onChange={(e) => onChange({ s2sEndpointUrl: e.target.value })}
+              className={cn(
+                !(career.s2sEndpointUrl ?? "").trim() && "border-[color:var(--figma-error-main)]",
+              )}
+              hint="Send selected server-side events to this endpoint."
+            />
+            <div className={CONFIGURE_SIDE_TRACKING_NEST}>
+              <div className="mb-3 flex flex-col gap-1">
+                <h3 className="text-sm font-semibold text-[color:var(--figma-gray-text-05)]">
+                  Tracking configuration
+                </h3>
+              </div>
+              <CareerSiteEventsSection
+                events={career.events}
+                architecture="s2s"
+                readOnly={readOnly}
+                onReplaceEvents={(events) => onChange({ events })}
+                ownershipRowByEventId={ownershipRowByEventId}
+              />
+            </div>
+          </div>
         </div>
-        <div className="space-y-2">
-          <Label htmlFor="cs-s2s-endpoint">
-            Endpoint URL <span className="text-[color:var(--figma-error-main)]">*</span>
-          </Label>
-          <Input
-            id="cs-s2s-endpoint"
-            placeholder="https://api.company.com/joveo/postback"
-            value={career.s2sEndpointUrl ?? ""}
-            disabled={readOnly}
-            onChange={(e) => onChange({ s2sEndpointUrl: e.target.value })}
-            className={cn(
-              !(career.s2sEndpointUrl ?? "").trim() && "border-[color:var(--figma-error-main)]",
-            )}
-          />
-          <p className="text-xs text-[color:var(--figma-gray-text-03)]">
-            Send selected server-side events to this endpoint.
-          </p>
-        </div>
-        <Separator />
-        <CareerSiteEventsSection
-          events={career.events}
-          architecture="s2s"
-          readOnly={readOnly}
-          globalCustomCount={globalCustomCount}
-          onReplaceEvents={(events) => onChange({ events })}
-        />
       </div>
     );
   }
 
   return (
-    <div className="space-y-5">
+    <div className="flex min-h-0 flex-1 flex-col gap-6">
       <div className="flex items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold text-[color:var(--figma-gray-text-05)]">
+        <h2 className="text-base font-medium leading-6 text-[color:var(--figma-gray-text-05)]">
           Career site
         </h2>
         <Button
@@ -3164,72 +4109,118 @@ function CareerSitePanel({
           <Trash2 className="size-4" />
         </Button>
       </div>
-      <div className="space-y-2">
-        <Label htmlFor="cs-name">
-          Career site name <span className="text-[color:var(--figma-error-main)]">*</span>
-        </Label>
-        <Input
-          id="cs-name"
-          value={career.name}
-          disabled={readOnly}
-          onChange={(e) => onChange({ name: e.target.value })}
-          className={cn(!career.name.trim() && "border-[color:var(--figma-error-main)]")}
-        />
+      <div className={CONFIGURE_SIDE_FORM_SHELL}>
+        <div className="flex flex-col gap-5">
+          <FieldInput
+            id="cs-name"
+            label="Career site name"
+            required
+            value={career.name}
+            disabled={readOnly}
+            onChange={(e) => onChange({ name: e.target.value })}
+            className={cn(!career.name.trim() && "border-[color:var(--figma-error-main)]")}
+          />
+          <FieldInput
+            id="cs-base"
+            label="Enter base URL"
+            required
+            placeholder="https://careers.example.com"
+            value={career.baseUrl}
+            disabled={readOnly}
+            onChange={(e) => onChange({ baseUrl: e.target.value })}
+            className={cn(
+              (!career.baseUrl.trim() || !isValidHttpOrHttpsUrl(career.baseUrl)) &&
+                "border-[color:var(--figma-error-main)]",
+            )}
+            aria-invalid={!career.baseUrl.trim() || !isValidHttpOrHttpsUrl(career.baseUrl)}
+            error={
+              career.baseUrl.trim() && !isValidHttpOrHttpsUrl(career.baseUrl)
+                ? "Enter a valid link with an http:// or https:// address."
+                : undefined
+            }
+          />
+          <div className={CONFIGURE_SIDE_TRACKING_NEST}>
+            <div className="mb-3 flex flex-col gap-1">
+              <h3 className="text-sm font-semibold text-[color:var(--figma-gray-text-05)]">
+                Tracking configuration
+              </h3>
+              {architecture === "pixel" ? (
+                <p className="text-xs leading-relaxed text-[color:var(--figma-gray-text-03)]">
+                  Enter exact URLs for the selected step.
+                </p>
+              ) : null}
+            </div>
+            <CareerSiteEventsSection
+              events={career.events}
+              architecture={architecture}
+              readOnly={readOnly}
+              onReplaceEvents={(events) => onChange({ events })}
+              pixelUrlResolveBase={career.baseUrl.trim() || undefined}
+              ownershipRowByEventId={ownershipRowByEventId}
+            />
+          </div>
+        </div>
       </div>
-      <div className="space-y-2">
-        <Label htmlFor="cs-base">
-          Enter base URL <span className="text-[color:var(--figma-error-main)]">*</span>
-        </Label>
-        <Input
-          id="cs-base"
-          placeholder="https://"
-          value={career.baseUrl}
-          disabled={readOnly}
-          onChange={(e) => onChange({ baseUrl: e.target.value })}
-          className={cn(!career.baseUrl.trim() && "border-[color:var(--figma-error-main)]")}
-        />
-      </div>
-      <Separator />
-      <div className="flex flex-col gap-1">
-        <h3 className="text-sm font-semibold text-[color:var(--figma-gray-text-05)]">
-          Tracking configuration
-        </h3>
-        {architecture === "pixel" ? <TrackingConfigurationPixelGuidance /> : null}
-      </div>
-      <CareerSiteEventsSection
-        events={career.events}
-        architecture={architecture}
-        readOnly={readOnly}
-        globalCustomCount={globalCustomCount}
-        onReplaceEvents={(events) => onChange({ events })}
-        pixelUrlResolveBase={career.baseUrl.trim() || undefined}
-      />
     </div>
   );
 }
 
 function AtsConfigurationPanel({
   ats,
-  atsCatalogId,
-  atsById,
-  careerSiteById,
+  atsNodeId,
+  flow,
+  atsFlowNodesById,
+  careerFlowNodesById,
+  atsTemplatesById,
   architecture,
   readOnly,
+  eventOwnershipResolution,
   onChange,
   onRemove,
 }: {
   ats: AtsState;
-  atsCatalogId: string;
-  atsById: Record<string, AtsState>;
-  careerSiteById: Record<string, CareerSiteState>;
+  atsNodeId: string;
+  flow: FlowState;
+  atsFlowNodesById: Record<string, AtsFlowNodeState>;
+  careerFlowNodesById: Record<string, CareerFlowNodeState>;
+  atsTemplatesById: Record<string, AtsTemplate>;
   architecture: Architecture;
   readOnly?: boolean;
+  eventOwnershipResolution: Record<string, EventOwnershipResolution>;
   onChange: (patch: Partial<AtsState>) => void;
   onRemove: () => void;
 }) {
+  const atsFunnelOwnershipRowByEventId = React.useMemo(() => {
+    const cid = flow.careerFlowNodeId;
+    const careerNode = cid ? careerFlowNodesById[cid] : undefined;
+    const careerEvents = careerNode?.events;
+    const fromMove = cid
+      ? getAtsFunnelRowUi(flow.id, cid, atsNodeId, ats.events, ats.vendor, eventOwnershipResolution)
+      : {};
+    const fromCareer =
+      careerEvents !== undefined
+        ? getAtsFunnelRowsBlockedByCareerSequentialOwnership(
+            careerEvents,
+            atsNodeId,
+            flow.atsIds[0] ?? null,
+          )
+        : {};
+    return mergeAtsFunnelOwnershipRowMeta(fromMove, fromCareer);
+  }, [
+    flow.id,
+    flow.careerFlowNodeId,
+    flow.atsIds,
+    atsNodeId,
+    ats.events,
+    ats.vendor,
+    eventOwnershipResolution,
+    careerFlowNodesById,
+  ]);
+
   const vendorsTakenElsewhere = React.useMemo(
-    () => vendorsUsedByOtherAtsEntries(atsById, atsCatalogId),
-    [atsById, atsCatalogId],
+    () =>
+      vendorsUsedByOtherAtsOnSameFlow(flow, atsFlowNodesById, atsTemplatesById, atsNodeId),
+    [flow, atsFlowNodesById, atsTemplatesById, atsNodeId],
   );
   const vendorSelectOptions = React.useMemo(
     () => ATS_OPTIONS.filter((opt) => opt === ats.vendor || !vendorsTakenElsewhere.has(opt)),
@@ -3237,7 +4228,11 @@ function AtsConfigurationPanel({
   );
   const atsVendorDropdownOptions = React.useMemo((): SearchableDropdownOption[] => {
     return vendorSelectOptions.map((opt) => {
-      const base: SearchableDropdownOption = { value: opt, label: opt };
+      const base: SearchableDropdownOption = {
+        value: opt,
+        label: opt,
+        logoSrc: ATS_VENDOR_LOGO_URL[opt],
+      };
       if (architecture === "pixel") {
         return {
           ...base,
@@ -3254,7 +4249,6 @@ function AtsConfigurationPanel({
       keywords: [o.value, o.label],
     }));
   }, []);
-  const globalCustomCount = countGlobalCustomEvents(careerSiteById, atsById);
   const testTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   React.useEffect(() => {
@@ -3273,11 +4267,13 @@ function AtsConfigurationPanel({
     }, 900);
   };
 
+  const pixelMethodRecommendation = atsPixelMethodRecommendationForPanel(ats.vendor, architecture);
+
   if (architecture === "s2s") {
     return (
-      <div className="space-y-5">
+      <div className="flex min-h-0 flex-1 flex-col gap-6">
         <div className="flex items-center justify-between gap-2">
-          <h2 className="text-lg font-semibold text-[color:var(--figma-gray-text-05)]">
+          <h2 className="text-base font-medium leading-6 text-[color:var(--figma-gray-text-05)]">
             ATS Configuration
           </h2>
           <Button
@@ -3291,81 +4287,83 @@ function AtsConfigurationPanel({
             <Trash2 className="size-4" />
           </Button>
         </div>
-        <div className="space-y-2">
-          <Label htmlFor="ats-vendor-select-s2s">
-            ATS name <span className="text-[color:var(--figma-error-main)]">*</span>
-          </Label>
-          <SearchableDropdown
-            id="ats-vendor-select-s2s"
-            options={atsVendorDropdownOptions}
-            value={ats.vendor}
-            onValueChange={(v) => onChange({ vendor: v })}
-            disabled={readOnly}
-            placeholder="Select ATS"
-            searchPlaceholder="Search"
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="ats-s2s-source">
-            Event source <span className="text-[color:var(--figma-error-main)]">*</span>
-          </Label>
-          <SearchableDropdown
-            id="ats-s2s-source"
-            options={s2sEventSourceDropdownOptions}
-            value={ats.s2sEventSource || undefined}
-            onValueChange={(v) => onChange({ s2sEventSource: v as S2sEventSource })}
-            disabled={readOnly}
-            placeholder="Select event source"
-            searchPlaceholder="Search"
-            triggerClassName={cn(!ats.s2sEventSource && "border-[color:var(--figma-error-main)]")}
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="ats-endpoint-s2s">
-            Endpoint URL <span className="text-[color:var(--figma-error-main)]">*</span>
-          </Label>
-          <Input
-            id="ats-endpoint-s2s"
-            placeholder="https://api.company.com/joveo/postback"
-            value={ats.endpointUrl}
-            disabled={readOnly}
-            onChange={(e) => onChange({ endpointUrl: e.target.value })}
-            className={cn(!ats.endpointUrl.trim() && "border-[color:var(--figma-error-main)]")}
-          />
-          <p className="text-xs text-[color:var(--figma-gray-text-03)]">
-            Send selected server-side events to this endpoint.
-          </p>
-        </div>
-        <Separator />
-        <AtsEventsSection
-          events={ats.events}
-          architecture="s2s"
-          readOnly={readOnly}
-          globalCustomCount={globalCustomCount}
-          onReplaceEvents={(events) => onChange({ events })}
-        />
-        <div className="space-y-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={readOnly}
-            onClick={sendTestEvent}
-          >
-            Send test event
-          </Button>
-          <p className="text-xs text-[color:var(--figma-gray-text-04)]">
-            Test status: {s2sTestStatusLabel(ats.s2sTestStatus)}
-          </p>
+        <div className={CONFIGURE_SIDE_FORM_SHELL}>
+          <div className="flex flex-col gap-5">
+            <div className="space-y-2">
+              <Label htmlFor="ats-vendor-select-s2s">
+                ATS name <span className="text-[color:var(--figma-error-main)]">*</span>
+              </Label>
+              <SearchableDropdown
+                id="ats-vendor-select-s2s"
+                showLogos
+                options={atsVendorDropdownOptions}
+                value={ats.vendor}
+                onValueChange={(v) => onChange({ vendor: v })}
+                disabled={readOnly}
+                placeholder="Select ATS"
+                searchPlaceholder="Search"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="ats-s2s-source">
+                Event source <span className="text-[color:var(--figma-error-main)]">*</span>
+              </Label>
+              <SearchableDropdown
+                id="ats-s2s-source"
+                options={s2sEventSourceDropdownOptions}
+                value={ats.s2sEventSource || undefined}
+                onValueChange={(v) => onChange({ s2sEventSource: v as S2sEventSource })}
+                disabled={readOnly}
+                placeholder="Select event source"
+                searchPlaceholder="Search"
+                triggerClassName={cn(!ats.s2sEventSource && "border-[color:var(--figma-error-main)]")}
+              />
+            </div>
+            <FieldInput
+              id="ats-endpoint-s2s"
+              label="Endpoint URL"
+              required
+              placeholder="https://api.company.com/joveo/postback"
+              value={ats.endpointUrl}
+              disabled={readOnly}
+              onChange={(e) => onChange({ endpointUrl: e.target.value })}
+              className={cn(!ats.endpointUrl.trim() && "border-[color:var(--figma-error-main)]")}
+              hint="Send selected server-side events to this endpoint."
+            />
+            <div className={CONFIGURE_SIDE_TRACKING_NEST}>
+              <AtsEventsSection
+                events={ats.events}
+                architecture="s2s"
+                readOnly={readOnly}
+                onReplaceEvents={(events) => onChange({ events })}
+                ownershipRowByEventId={atsFunnelOwnershipRowByEventId}
+                pixelMethodRecommendation={pixelMethodRecommendation}
+              />
+              <div className="mt-5 space-y-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={readOnly}
+                  onClick={sendTestEvent}
+                >
+                  Send test event
+                </Button>
+                <p className="text-xs text-[color:var(--figma-gray-text-04)]">
+                  Test status: {s2sTestStatusLabel(ats.s2sTestStatus)}
+                </p>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-5">
+    <div className="flex min-h-0 flex-1 flex-col gap-6">
       <div className="flex items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold text-[color:var(--figma-gray-text-05)]">
+        <h2 className="text-base font-medium leading-6 text-[color:var(--figma-gray-text-05)]">
           ATS Configuration
         </h2>
         <Button
@@ -3379,48 +4377,56 @@ function AtsConfigurationPanel({
           <Trash2 className="size-4" />
         </Button>
       </div>
-      <div className="space-y-2">
-        <Label htmlFor="ats-vendor-select">
-          Select ATS <span className="text-[color:var(--figma-error-main)]">*</span>
-        </Label>
-        <SearchableDropdown
-          id="ats-vendor-select"
-          options={atsVendorDropdownOptions}
-          value={ats.vendor}
-          onValueChange={(v) => onChange({ vendor: v })}
-          disabled={readOnly}
-          placeholder="Select ATS"
-          searchPlaceholder="Search"
-        />
+      <div className={CONFIGURE_SIDE_FORM_SHELL}>
+        <div className="flex flex-col gap-5">
+          <div className="space-y-2">
+            <Label htmlFor="ats-vendor-select">
+              Select ATS <span className="text-[color:var(--figma-error-main)]">*</span>
+            </Label>
+            <SearchableDropdown
+              id="ats-vendor-select"
+              showLogos
+              options={atsVendorDropdownOptions}
+              value={ats.vendor}
+              onValueChange={(v) => onChange({ vendor: v })}
+              disabled={readOnly}
+              placeholder="Select ATS"
+              searchPlaceholder="Search"
+            />
+          </div>
+          <FieldInput
+            id="ats-endpoint"
+            label="Enter base URL"
+            required
+            placeholder="e.g. http://company.myworkdayjobs.com/jobs"
+            value={ats.endpointUrl}
+            disabled={readOnly}
+            onChange={(e) => onChange({ endpointUrl: e.target.value })}
+            className={cn(!ats.endpointUrl.trim() && "border-[color:var(--figma-error-main)]")}
+          />
+          <div className={CONFIGURE_SIDE_TRACKING_NEST}>
+            <div className="mb-3 flex flex-col gap-1">
+              <h3 className="text-sm font-semibold text-[color:var(--figma-gray-text-05)]">
+                Tracking configuration
+              </h3>
+              {architecture === "pixel" ? (
+                <p className="text-xs leading-relaxed text-[color:var(--figma-gray-text-03)]">
+                  Enter exact URLs for the selected step.
+                </p>
+              ) : null}
+            </div>
+            <AtsEventsSection
+              events={ats.events}
+              architecture={architecture}
+              readOnly={readOnly}
+              onReplaceEvents={(events) => onChange({ events })}
+              pixelUrlResolveBase={ats.endpointUrl.trim() || undefined}
+              ownershipRowByEventId={atsFunnelOwnershipRowByEventId}
+              pixelMethodRecommendation={pixelMethodRecommendation}
+            />
+          </div>
+        </div>
       </div>
-      <div className="space-y-2">
-        <Label htmlFor="ats-endpoint">
-          Enter base URL <span className="text-[color:var(--figma-error-main)]">*</span>
-        </Label>
-        <Input
-          id="ats-endpoint"
-          placeholder="e.g. http://company.myworkdayjobs.com/jobs"
-          value={ats.endpointUrl}
-          disabled={readOnly}
-          onChange={(e) => onChange({ endpointUrl: e.target.value })}
-          className={cn(!ats.endpointUrl.trim() && "border-[color:var(--figma-error-main)]")}
-        />
-      </div>
-      <Separator />
-      <div className="flex flex-col gap-1">
-        <h3 className="text-sm font-semibold text-[color:var(--figma-gray-text-05)]">
-          Tracking configuration
-        </h3>
-        {architecture === "pixel" ? <TrackingConfigurationPixelGuidance /> : null}
-      </div>
-      <AtsEventsSection
-        events={ats.events}
-        architecture={architecture}
-        readOnly={readOnly}
-        globalCustomCount={globalCustomCount}
-        onReplaceEvents={(events) => onChange({ events })}
-        pixelUrlResolveBase={ats.endpointUrl.trim() || undefined}
-      />
     </div>
   );
 }

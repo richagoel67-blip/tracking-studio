@@ -66,7 +66,7 @@ export type AtsState = {
   s2sTestStatus?: S2sTestStatus;
 };
 
-export const SETUP_DATA_VERSION = 3;
+export const SETUP_DATA_VERSION = 7;
 
 const DEFAULT_IDS = ["view", "lead", "apply_start", "apply_finish"] as const;
 
@@ -334,6 +334,69 @@ export function removeCustomEvent(events: TrackingEvent[], id: string): Tracking
   return events.filter((e) => e.id !== id || e.type !== "custom");
 }
 
+/** Mark duplicate custom names only within a single node's event list. */
+function markDuplicatesWithinEvents(events: TrackingEvent[]): TrackingEvent[] {
+  const keyToIds = new Map<string, string[]>();
+  for (const e of events) {
+    if (e.type === "custom" && e.label.trim()) {
+      const k = nameToEventKey(e.label);
+      if (!keyToIds.has(k)) keyToIds.set(k, []);
+      keyToIds.get(k)!.push(e.id);
+    }
+  }
+  const dupIds = new Set<string>();
+  for (const [k, ids] of keyToIds.entries()) {
+    if (k === "CUSTOM_EVENT") continue;
+    if (ids.length > 1) for (const id of ids) dupIds.add(id);
+  }
+  return events.map((e) => {
+    if (e.type !== "custom") return e;
+    const dup = dupIds.has(e.id) && e.label.trim().length > 0;
+    return {
+      ...e,
+      errors: {
+        ...e.errors,
+        name: dup ? "This custom event name already exists." : e.errors?.name,
+      },
+    };
+  });
+}
+
+/** v4: duplicate custom event names are scoped per flow node (not global across flows). */
+export function markCustomDuplicateErrorsForFlowNodes<
+  C extends { events: TrackingEvent[] },
+  A extends { events: TrackingEvent[] },
+>(
+  careerFlowNodesById: Record<string, C>,
+  atsFlowNodesById: Record<string, A>,
+): { careerFlowNodesById: Record<string, C>; atsFlowNodesById: Record<string, A> } {
+  return {
+    careerFlowNodesById: Object.fromEntries(
+      Object.entries(careerFlowNodesById).map(([k, n]) => [
+        k,
+        { ...n, events: markDuplicatesWithinEvents(n.events) } as C,
+      ]),
+    ),
+    atsFlowNodesById: Object.fromEntries(
+      Object.entries(atsFlowNodesById).map(([k, n]) => [
+        k,
+        { ...n, events: markDuplicatesWithinEvents(n.events) } as A,
+      ]),
+    ),
+  };
+}
+
+export function hasAnyDuplicateCustomNameErrorForFlowNodes<
+  C extends { events: TrackingEvent[] },
+  A extends { events: TrackingEvent[] },
+>(careerFlowNodesById: Record<string, C>, atsFlowNodesById: Record<string, A>): boolean {
+  const m = markCustomDuplicateErrorsForFlowNodes(careerFlowNodesById, atsFlowNodesById);
+  return (
+    Object.values(m.careerFlowNodesById).some((n) => n.events.some((e) => e.errors?.name)) ||
+    Object.values(m.atsFlowNodesById).some((n) => n.events.some((e) => e.errors?.name))
+  );
+}
+
 export function countGlobalCustomEvents(
   careerSiteById: Record<string, CareerSiteState>,
   atsById: Record<string, AtsState>,
@@ -348,50 +411,34 @@ export function countGlobalCustomEvents(
   return n;
 }
 
-/** Mark duplicate custom event ids (same uppercase key from name). */
+export function countGlobalCustomEventsFromFlowNodes<
+  C extends { events: TrackingEvent[] },
+  A extends { events: TrackingEvent[] },
+>(careerFlowNodesById: Record<string, C>, atsFlowNodesById: Record<string, A>): number {
+  let n = 0;
+  for (const node of Object.values(careerFlowNodesById)) {
+    n += node.events.filter((e) => e.type === "custom").length;
+  }
+  for (const node of Object.values(atsFlowNodesById)) {
+    n += node.events.filter((e) => e.type === "custom").length;
+  }
+  return n;
+}
+
+/** Mark duplicate custom event names within each career / ATS row (not across rows). */
 export function markCustomDuplicateErrors(
   careerSiteById: Record<string, CareerSiteState>,
   atsById: Record<string, AtsState>,
 ): { careerSiteById: Record<string, CareerSiteState>; atsById: Record<string, AtsState> } {
-  const keyToIds = new Map<string, string[]>();
-  const register = (label: string, eventId: string) => {
-    const k = nameToEventKey(label);
-    if (!keyToIds.has(k)) keyToIds.set(k, []);
-    keyToIds.get(k)!.push(eventId);
-  };
-  for (const cs of Object.values(careerSiteById)) {
-    for (const e of cs.events) {
-      if (e.type === "custom" && e.label.trim()) register(e.label, e.id);
-    }
-  }
-  for (const a of Object.values(atsById)) {
-    for (const e of a.events) {
-      if (e.type === "custom" && e.label.trim()) register(e.label, e.id);
-    }
-  }
-  const dupIds = new Set<string>();
-  for (const [k, ids] of keyToIds.entries()) {
-    if (k === "CUSTOM_EVENT") continue;
-    if (ids.length > 1) for (const id of ids) dupIds.add(id);
-  }
-  const strip = (events: TrackingEvent[]) =>
-    events.map((e) => {
-      if (e.type !== "custom") return e;
-      const dup = dupIds.has(e.id) && e.label.trim().length > 0;
-      return {
-        ...e,
-        errors: {
-          ...e.errors,
-          name: dup ? "This custom event name already exists." : e.errors?.name,
-        },
-      };
-    });
   return {
     careerSiteById: Object.fromEntries(
-      Object.entries(careerSiteById).map(([k, cs]) => [k, { ...cs, events: strip(cs.events) }]),
+      Object.entries(careerSiteById).map(([k, cs]) => [
+        k,
+        { ...cs, events: markDuplicatesWithinEvents(cs.events) },
+      ]),
     ),
     atsById: Object.fromEntries(
-      Object.entries(atsById).map(([k, a]) => [k, { ...a, events: strip(a.events) }]),
+      Object.entries(atsById).map(([k, a]) => [k, { ...a, events: markDuplicatesWithinEvents(a.events) }]),
     ),
   };
 }
@@ -484,6 +531,20 @@ function isS2sEventSourceSet(v: CareerSiteState["s2sEventSource"]): boolean {
   return Boolean(v && String(v).trim());
 }
 
+/** Pixel career base URL: must use http(s) scheme and parse as a URL with a host. */
+export function isValidHttpOrHttpsUrl(raw: string): boolean {
+  const s = raw.trim();
+  if (!s) return false;
+  const lower = s.toLowerCase();
+  if (!lower.startsWith("http://") && !lower.startsWith("https://")) return false;
+  try {
+    const u = new URL(s);
+    return Boolean(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export function isCareerS2sComplete(cs: CareerSiteState): boolean {
   if (!cs.name.trim()) return false;
   if (!(cs.s2sEndpointUrl ?? "").trim()) return false;
@@ -510,7 +571,7 @@ export function isCareerTrackingComplete(
   architecture: TrackingSetupArchitecture = "pixel",
 ): boolean {
   if (architecture === "s2s") return isCareerS2sComplete(cs);
-  if (!cs.name.trim() || !cs.baseUrl.trim()) return false;
+  if (!cs.name.trim() || !isValidHttpOrHttpsUrl(cs.baseUrl)) return false;
   for (const e of cs.events) {
     if (!isTrackingEventRowValid(e, "pixel")) return false;
   }
@@ -541,6 +602,49 @@ export function countEnabledDefaultEvents(
   };
   for (const cs of Object.values(careerSiteById)) count(cs.events);
   for (const a of Object.values(atsById)) count(a.events);
+  return n;
+}
+
+export function countEnabledDefaultEventsFromFlowNodes<
+  C extends { events: TrackingEvent[] },
+  A extends { events: TrackingEvent[] },
+>(careerFlowNodesById: Record<string, C>, atsFlowNodesById: Record<string, A>): number {
+  let n = 0;
+  const count = (events: TrackingEvent[]) => {
+    for (const e of events) {
+      if (e.type === "default" && e.enabled) n += 1;
+    }
+  };
+  for (const node of Object.values(careerFlowNodesById)) count(node.events);
+  for (const node of Object.values(atsFlowNodesById)) count(node.events);
+  return n;
+}
+
+export function countCustomEventsDefinedFromFlowNodes<
+  C extends { events: TrackingEvent[] },
+  A extends { events: TrackingEvent[] },
+>(careerFlowNodesById: Record<string, C>, atsFlowNodesById: Record<string, A>): number {
+  let n = 0;
+  for (const node of Object.values(careerFlowNodesById)) {
+    n += node.events.filter((e) => e.type === "custom").length;
+  }
+  for (const node of Object.values(atsFlowNodesById)) {
+    n += node.events.filter((e) => e.type === "custom").length;
+  }
+  return n;
+}
+
+export function countEnabledCustomEventsFromFlowNodes<
+  C extends { events: TrackingEvent[] },
+  A extends { events: TrackingEvent[] },
+>(careerFlowNodesById: Record<string, C>, atsFlowNodesById: Record<string, A>): number {
+  let n = 0;
+  for (const node of Object.values(careerFlowNodesById)) {
+    n += node.events.filter((e) => e.type === "custom" && e.enabled).length;
+  }
+  for (const node of Object.values(atsFlowNodesById)) {
+    n += node.events.filter((e) => e.type === "custom" && e.enabled).length;
+  }
   return n;
 }
 

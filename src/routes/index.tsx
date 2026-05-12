@@ -1,3 +1,6 @@
+"use client";
+
+import * as React from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import {
   Play,
@@ -11,15 +14,21 @@ import {
 } from "lucide-react";
 
 import { AppShell } from "@/components/tracking-studio/AppShell";
+import { Button } from "@/components/ui/button";
+import { MOCK_TRACKING_EVENT_LOGS } from "@/components/tracking-studio/tracking-events-drawer/mock-tracking-event-logs";
+import { TrackingEventsDrawer } from "@/components/tracking-studio/tracking-events-drawer/TrackingEventsDrawer";
 
 export const Route = createFileRoute("/")({
   component: Dashboard,
 });
 
 function Dashboard() {
+  const [activityOpen, setActivityOpen] = React.useState(false);
+
   return (
     <AppShell>
-      <div className="mx-auto max-w-[1148px] space-y-5 p-6">
+      <div className="min-h-full bg-[color:var(--figma-gray-bg-04)]">
+        <div className="mx-auto max-w-[1148px] space-y-5 p-6">
         <div>
           <h1 className="text-lg font-semibold leading-7 text-foreground">Dashboard</h1>
           <p className="mt-2 text-sm leading-5 text-[color:var(--figma-gray-text-03)]">
@@ -48,13 +57,23 @@ function Dashboard() {
                 </span>
               </div>
             </div>
-            <button
-              type="button"
-              className="inline-flex h-11 w-[140px] items-center justify-center gap-1 rounded-lg bg-primary px-5 py-2.5 text-base font-medium leading-6 text-[color:var(--figma-on-primary-label)] transition-opacity hover:opacity-90"
-            >
-              <Play className="size-5" strokeWidth={1.75} />
-              Run Tests
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-11 rounded-lg border-0 bg-[color:var(--figma-primary-lighter)] px-5 py-2.5 text-base font-medium leading-6 text-[color:var(--figma-primary-main)] shadow-none hover:bg-[color:var(--figma-primary-light)] hover:text-[color:var(--figma-primary-main)] focus-visible:ring-1 focus-visible:ring-[color:var(--figma-primary-main)]/25"
+                onClick={() => setActivityOpen(true)}
+              >
+                Activity logs
+              </Button>
+              <button
+                type="button"
+                className="inline-flex h-11 w-[140px] items-center justify-center gap-1 rounded-lg bg-primary px-5 py-2.5 text-base font-medium leading-6 text-[color:var(--figma-on-primary-label)] transition-opacity hover:opacity-90"
+              >
+                <Play className="size-5" strokeWidth={1.75} />
+                Run Tests
+              </button>
+            </div>
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-8 lg:gap-12">
             <div className="flex items-center gap-1 text-xs leading-[18px]">
@@ -415,7 +434,15 @@ function Dashboard() {
             </button>
           </div>
         </section>
+        </div>
       </div>
+
+      <TrackingEventsDrawer
+        clientName="Tenet Healthcare"
+        logs={MOCK_TRACKING_EVENT_LOGS}
+        isOpen={activityOpen}
+        onClose={() => setActivityOpen(false)}
+      />
     </AppShell>
   );
 }

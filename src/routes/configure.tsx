@@ -15,7 +15,7 @@ function ConfigurePage() {
 
   return (
     <AppShell clientName="Allied Services" hideSidebar={hideSidebar}>
-      <div className="flex h-[calc(100dvh-4rem)] max-h-[calc(100dvh-4rem)] min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="flex h-[calc(100dvh-4rem)] max-h-[calc(100dvh-4rem)] min-h-0 flex-1 flex-col overflow-hidden bg-[color:var(--figma-gray-bg-04)]">
         <ConfigureTrackingSetup onStageChange={setConfigureStage} />
       </div>
       <Toaster />

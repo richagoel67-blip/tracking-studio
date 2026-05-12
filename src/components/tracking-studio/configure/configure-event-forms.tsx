@@ -6,13 +6,12 @@ import { ChevronDown, Info, Trash2 } from "lucide-react";
 import type { Architecture } from "./tracking-setup-storage";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Input } from "@/components/ui/input";
+import { FieldInput } from "@/components/ui/field-input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
-  addCustomEvent,
   eventChipToneClassNames,
   isExpandableDefault,
   nameToEventKey,
@@ -24,13 +23,7 @@ import {
   type TrackingEvent,
 } from "./tracking-events";
 import { deriveTrackingPattern, type DerivedTrackingPattern } from "./derive-tracking-pattern";
-
-const MAX_CUSTOM_GLOBAL = 5;
-
-export { MAX_CUSTOM_GLOBAL };
-
-const EXACT_EVENT_URL_TOOLTIP =
-  "Paste the exact page URL visible in the browser when this event should fire. We'll automatically extract the stable tracking pattern and ignore dynamic IDs, tracking parameters, and query strings.";
+import type { CareerRowOwnershipMeta } from "./event-funnel-ownership";
 
 const TRACKING_CONFIGURATION_PIXEL_GUIDANCE_TOOLTIP =
   "Paste the exact page where the event happens. We use it to generate a stable tracking pattern by keeping the domain and static path while ignoring dynamic IDs, UTM parameters, and query strings.";
@@ -69,24 +62,22 @@ function duplicatePixelPatternMessage(
   return null;
 }
 
-/** Link + tooltip under “Tracking configuration” for Pixel architecture (career + ATS panels). */
-export function TrackingConfigurationPixelGuidance() {
+/** Inline with the “Exact event URL” label (Figma: right-aligned on the label row). */
+function WhyExactUrlsTooltipLink() {
   return (
-    <div>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            className="cursor-pointer border-0 bg-transparent p-0 text-left text-xs font-semibold text-[color:var(--figma-secondary-main)] underline decoration-[color:var(--figma-secondary-main)]/35 underline-offset-2 hover:decoration-[color:var(--figma-secondary-main)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--figma-secondary-main)] focus-visible:ring-offset-2"
-          >
-            Why we ask for exact URLs
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="top" title="Why we ask for exact URLs">
-          {TRACKING_CONFIGURATION_PIXEL_GUIDANCE_TOOLTIP}
-        </TooltipContent>
-      </Tooltip>
-    </div>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          className="shrink-0 cursor-pointer border-0 bg-transparent p-0 text-right text-xs font-normal text-[color:var(--figma-primary-main)] underline decoration-[color:var(--figma-primary-main)]/30 underline-offset-2 hover:decoration-[color:var(--figma-primary-main)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--figma-secondary-main)] focus-visible:ring-offset-2"
+        >
+          Why we ask for exact URLs
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" title="Why we ask for exact URLs" className="max-w-xs">
+        {TRACKING_CONFIGURATION_PIXEL_GUIDANCE_TOOLTIP}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -269,55 +260,33 @@ function PixelExactEventUrlField({
 
   return (
     <div className="space-y-2">
-      <div className="space-y-1">
-        <div className="flex items-center gap-1.5">
-          <Label htmlFor={inputId} className="mb-0">
-            Exact event URL <span className="text-[color:var(--figma-error-main)]">*</span>
-          </Label>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                className="inline-flex shrink-0 rounded text-[color:var(--figma-gray-icon-04)] hover:text-[color:var(--figma-secondary-main)]"
-                aria-label="About exact event URL"
-              >
-                <Info className="size-3.5" strokeWidth={2} aria-hidden />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="top" title="Exact event URL">
-              {EXACT_EVENT_URL_TOOLTIP}
-            </TooltipContent>
-          </Tooltip>
-        </div>
-        <Input
-          id={inputId}
-          value={value}
-          disabled={readOnly}
-          placeholder={placeholder}
-          onChange={(e) => onChange(e.target.value)}
-          className={cn(
-            "bg-white",
-            requiredEmpty && "border-[color:var(--figma-error-main)]",
-            formatError && "border-[color:var(--figma-error-main)]",
-          )}
-          aria-invalid={requiredEmpty || Boolean(formatError)}
-        />
-        {requiredEmpty ? (
-          <p className="text-xs text-[color:var(--figma-error-main)]">
-            {eventId === "lead"
+      <FieldInput
+        id={inputId}
+        label="Exact event URL"
+        required
+        labelTrailing={<WhyExactUrlsTooltipLink />}
+        value={value}
+        disabled={readOnly}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        className={cn(
+          requiredEmpty && "border-[color:var(--figma-error-main)]",
+          formatError && "border-[color:var(--figma-error-main)]",
+        )}
+        aria-invalid={requiredEmpty || Boolean(formatError)}
+        error={
+          requiredEmpty
+            ? eventId === "lead"
               ? "Enter the URL where this event should fire."
-              : "URL is required when this event is enabled."}
-          </p>
-        ) : null}
-        {!requiredEmpty && formatError ? (
-          <p className="text-xs text-[color:var(--figma-error-main)]">{formatError}</p>
-        ) : null}
-        {!requiredEmpty && formatWarning && !formatError ? (
-          <p className="text-xs font-medium text-[color:var(--figma-warning-main)]">
-            {formatWarning}
-          </p>
-        ) : null}
-      </div>
+              : "URL is required when this event is enabled."
+            : formatError
+              ? formatError
+              : undefined
+        }
+        warning={
+          !requiredEmpty && formatWarning && !formatError ? formatWarning : undefined
+        }
+      />
       <GeneratedTrackingPatternCard
         derived={derived}
         trimmed={Boolean(trimmed)}
@@ -329,53 +298,71 @@ function PixelExactEventUrlField({
   );
 }
 
+function MethodRecBadge() {
+  return (
+    <span
+      className="shrink-0 rounded bg-[color:var(--figma-warning-lighter)] px-2 py-0.5 text-[10px] font-medium leading-none text-[color:var(--figma-warning-main)]"
+      aria-label="Recommended"
+    >
+      REC
+    </span>
+  );
+}
+
 function MethodSegments({
   value,
   onChange,
   architecture,
   disabled,
+  recommendedMethod,
 }: {
   value: "js" | "image";
   onChange: (v: "js" | "image") => void;
   architecture: Architecture;
   disabled?: boolean;
+  /** When set (typically ATS pixel), show a REC badge on the more-supported method. */
+  recommendedMethod?: "js" | "image";
 }) {
-  const jsLabel = architecture === "pixel" ? "JS Pixel" : "JS";
-  const imageLabel = architecture === "pixel" ? "Image Pixel" : "Image";
+  const jsLabel = "JS";
+  const imageLabel = "Image";
+  const jsTitle = architecture === "pixel" ? "JavaScript pixel" : "JavaScript";
+  const imageTitle = architecture === "pixel" ? "Image pixel" : "Image";
+
   return (
-    <div className="inline-flex rounded-lg border border-[color:var(--figma-gray-border-02)] bg-white p-0.5">
+    <div className="flex flex-wrap items-start gap-4">
       <button
         type="button"
         disabled={disabled}
+        title={jsTitle}
+        aria-pressed={value === "js"}
         onClick={() => onChange("js")}
         className={cn(
-          "h-9 min-w-[5.5rem] rounded-md px-4 text-sm font-medium transition-colors",
+          "inline-flex min-h-9 min-w-[5.5rem] items-center justify-center gap-1.5 rounded-lg border px-6 py-2 text-sm font-medium transition-colors",
           value === "js"
-            ? "border border-[color:var(--figma-secondary-main)] text-[color:var(--figma-secondary-main)]"
-            : "border border-transparent text-[color:var(--figma-gray-text-04)] hover:bg-[color:var(--figma-gray-bg-01)]",
+            ? "border-[color:var(--figma-primary-main)] bg-[color:var(--figma-primary-lighter)] text-[color:var(--figma-primary-main)]"
+            : "border-[color:var(--figma-gray-border-03)] bg-white text-[color:var(--figma-gray-text-03)] hover:bg-[color:var(--figma-gray-bg-01)]",
           disabled && "pointer-events-none opacity-50",
         )}
       >
-        {jsLabel}
+        <span>{jsLabel}</span>
+        {recommendedMethod === "js" ? <MethodRecBadge /> : null}
       </button>
       <button
         type="button"
         disabled={disabled}
+        title={imageTitle}
+        aria-pressed={value === "image"}
         onClick={() => onChange("image")}
         className={cn(
-          "inline-flex h-9 min-w-[7rem] items-center justify-center gap-1.5 rounded-md px-3 text-sm font-medium transition-colors",
+          "inline-flex min-h-9 min-w-[7rem] items-center justify-center gap-1.5 rounded-lg border px-6 py-2 text-sm font-medium transition-colors",
           value === "image"
-            ? "border border-[color:var(--figma-secondary-main)] text-[color:var(--figma-secondary-main)]"
-            : "border border-transparent text-[color:var(--figma-gray-text-04)] hover:bg-[color:var(--figma-gray-bg-01)]",
+            ? "border-[color:var(--figma-primary-main)] bg-[color:var(--figma-primary-lighter)] text-[color:var(--figma-primary-main)]"
+            : "border-[color:var(--figma-gray-border-03)] bg-white text-[color:var(--figma-gray-text-03)] hover:bg-[color:var(--figma-gray-bg-01)]",
           disabled && "pointer-events-none opacity-50",
         )}
       >
-        {imageLabel}
-        {architecture !== "pixel" ? (
-          <span className="rounded bg-[color:var(--figma-warning-lighter)] px-1 text-[9px] font-semibold text-[color:var(--figma-warning-main)]">
-            REC
-          </span>
-        ) : null}
+        <span>{imageLabel}</span>
+        {recommendedMethod === "image" ? <MethodRecBadge /> : null}
       </button>
     </div>
   );
@@ -391,18 +378,31 @@ function DefaultEventBlock({
   readOnly,
   allEvents,
   pixelUrlResolveBase,
+  pixelMethodRecommendation,
   onPatch,
+  ownershipRow,
 }: {
   ev: TrackingEvent;
   architecture: Architecture;
   readOnly?: boolean;
   allEvents: TrackingEvent[];
   pixelUrlResolveBase?: string;
+  pixelMethodRecommendation?: "js" | "image";
   onPatch: (patch: Partial<TrackingEvent>) => void;
+  ownershipRow?: CareerRowOwnershipMeta;
 }) {
+  const lockOnlyWhenOff = ownershipRow?.lockEnableOnly === true;
+  const switchLocked = Boolean(
+    readOnly || (ownershipRow?.switchDisabled && (!lockOnlyWhenOff || !ev.enabled)),
+  );
   if (architecture === "s2s") {
     return (
-      <div className="space-y-2">
+      <div
+        className={cn(
+          "space-y-2",
+          ownershipRow?.muted && "rounded-lg opacity-60",
+        )}
+      >
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-[color:var(--figma-gray-text-05)]">
@@ -419,10 +419,18 @@ function DefaultEventBlock({
           </div>
           <Switch
             checked={ev.enabled}
-            disabled={readOnly}
-            onCheckedChange={(v) => onPatch({ enabled: v })}
+            disabled={switchLocked}
+            onCheckedChange={(v) => {
+              if (!switchLocked) onPatch({ enabled: v });
+            }}
           />
         </div>
+        {ownershipRow?.helperText ? (
+          <p className="flex items-start gap-1.5 text-xs text-[color:var(--figma-gray-text-03)]">
+            <Info className="mt-0.5 size-3.5 shrink-0" strokeWidth={2} aria-hidden />
+            <span>{ownershipRow.helperText}</span>
+          </p>
+        ) : null}
       </div>
     );
   }
@@ -434,7 +442,7 @@ function DefaultEventBlock({
   const method = methodToJsImage(ev.trackingMethod);
 
   return (
-    <div className="space-y-3">
+    <div className={cn("space-y-3", ownershipRow?.muted && "rounded-lg opacity-60")}>
       <div>
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
@@ -452,13 +460,28 @@ function DefaultEventBlock({
           </div>
           <Switch
             checked={ev.enabled}
-            disabled={readOnly}
-            onCheckedChange={(v) => onPatch({ enabled: v })}
+            disabled={switchLocked}
+            onCheckedChange={(v) => {
+              if (!switchLocked) onPatch({ enabled: v });
+            }}
           />
         </div>
+        {ownershipRow?.helperText ? (
+          <p className="mt-2 flex items-start gap-1.5 text-xs text-[color:var(--figma-gray-text-03)]">
+            <Info className="mt-0.5 size-3.5 shrink-0" strokeWidth={2} aria-hidden />
+            <span>{ownershipRow.helperText}</span>
+          </p>
+        ) : null}
       </div>
       {expanded ? (
         <div className="space-y-3 rounded-lg border border-[color:var(--figma-gray-border-02)] bg-white p-3">
+          <MethodSegments
+            value={method}
+            architecture={architecture}
+            disabled={readOnly}
+            recommendedMethod={pixelMethodRecommendation}
+            onChange={(v) => onPatch({ trackingMethod: v })}
+          />
           <PixelExactEventUrlField
             eventId={ev.id}
             value={ev.url}
@@ -467,12 +490,6 @@ function DefaultEventBlock({
             requiredEmpty={urlInvalid}
             allEvents={allEvents}
             resolveBaseUrl={pixelUrlResolveBase}
-          />
-          <MethodSegments
-            value={method}
-            architecture={architecture}
-            disabled={readOnly}
-            onChange={(v) => onPatch({ trackingMethod: v })}
           />
         </div>
       ) : null}
@@ -486,6 +503,7 @@ function CustomEventBlock({
   readOnly,
   allEvents,
   pixelUrlResolveBase,
+  pixelMethodRecommendation,
   onPatch,
   onRemove,
 }: {
@@ -494,6 +512,7 @@ function CustomEventBlock({
   readOnly?: boolean;
   allEvents: TrackingEvent[];
   pixelUrlResolveBase?: string;
+  pixelMethodRecommendation?: "js" | "image";
   onPatch: (patch: Partial<TrackingEvent>) => void;
   onRemove: () => void;
 }) {
@@ -504,13 +523,9 @@ function CustomEventBlock({
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1 space-y-2">
             <div className="space-y-1">
-              <Label>
-                Custom event name{" "}
-                {ev.enabled ? (
-                  <span className="text-[color:var(--figma-error-main)]">*</span>
-                ) : null}
-              </Label>
-              <Input
+              <FieldInput
+                label="Custom event name"
+                required={ev.enabled}
                 value={ev.label}
                 disabled={readOnly}
                 onChange={(e) =>
@@ -519,10 +534,12 @@ function CustomEventBlock({
                 className={cn(
                   (nameInvalid || ev.errors?.name) && "border-[color:var(--figma-error-main)]",
                 )}
+                aria-invalid={nameInvalid || Boolean(ev.errors?.name)}
+                error={
+                  ev.errors?.name ||
+                  (nameInvalid ? "Enter a name when this event is enabled." : undefined)
+                }
               />
-              {ev.errors?.name ? (
-                <p className="text-xs text-[color:var(--figma-error-main)]">{ev.errors.name}</p>
-              ) : null}
             </div>
             <div className="flex items-center gap-2">
               <span className="text-xs text-[color:var(--figma-gray-text-03)]">Event key</span>
@@ -565,10 +582,9 @@ function CustomEventBlock({
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1 space-y-2">
           <div className="space-y-1">
-            <Label>
-              Custom event name <span className="text-[color:var(--figma-error-main)]">*</span>
-            </Label>
-            <Input
+            <FieldInput
+              label="Custom event name"
+              required
               value={ev.label}
               disabled={readOnly}
               onChange={(e) =>
@@ -577,10 +593,11 @@ function CustomEventBlock({
               className={cn(
                 (nameInvalid || ev.errors?.name) && "border-[color:var(--figma-error-main)]",
               )}
+              aria-invalid={nameInvalid || Boolean(ev.errors?.name)}
+              error={
+                ev.errors?.name || (nameInvalid ? "Custom event name is required." : undefined)
+              }
             />
-            {ev.errors?.name ? (
-              <p className="text-xs text-[color:var(--figma-error-main)]">{ev.errors.name}</p>
-            ) : null}
           </div>
           <div className="flex items-center gap-2">
             <span className="text-xs text-[color:var(--figma-gray-text-03)]">Event key</span>
@@ -603,6 +620,13 @@ function CustomEventBlock({
         </div>
       </div>
       <div className="space-y-3 border-t border-[color:var(--figma-gray-border-02)] pt-3">
+        <MethodSegments
+          value={method}
+          architecture={architecture}
+          disabled={readOnly}
+          recommendedMethod={pixelMethodRecommendation}
+          onChange={(v) => onPatch({ trackingMethod: v })}
+        />
         <PixelExactEventUrlField
           eventId={ev.id}
           value={ev.url}
@@ -611,12 +635,6 @@ function CustomEventBlock({
           requiredEmpty={urlInvalid}
           allEvents={allEvents}
           resolveBaseUrl={pixelUrlResolveBase}
-        />
-        <MethodSegments
-          value={method}
-          architecture={architecture}
-          disabled={readOnly}
-          onChange={(v) => onPatch({ trackingMethod: v })}
         />
       </div>
     </div>
@@ -629,33 +647,30 @@ function EventsEditor({
   events,
   architecture,
   readOnly,
-  globalCustomCount,
   normalize,
   onReplaceEvents,
   pixelUrlResolveBase,
+  pixelMethodRecommendation,
+  ownershipRowByEventId,
 }: {
   events: TrackingEvent[];
   architecture: Architecture;
   readOnly?: boolean;
-  globalCustomCount: number;
   normalize: NormalizeFn;
   onReplaceEvents: (next: TrackingEvent[]) => void;
   /** Career / ATS base URL used to resolve relative pixel event URLs in previews. */
   pixelUrlResolveBase?: string;
+  /** ATS pixel: which method is more supported for the current vendor (REC badge). */
+  pixelMethodRecommendation?: "js" | "image";
+  ownershipRowByEventId?: Partial<Record<string, CareerRowOwnershipMeta>>;
 }) {
   const defaults = events.filter((e) => e.type === "default");
   const customs = events.filter((e) => e.type === "custom");
-  const atCap = globalCustomCount >= MAX_CUSTOM_GLOBAL;
 
   const patchEvent = (id: string, patch: Partial<TrackingEvent>) => {
     let next = updateEventInList(events, id, patch);
     next = syncCustomEventKeys(next);
     onReplaceEvents(normalize(next));
-  };
-
-  const addCustom = () => {
-    if (atCap || readOnly) return;
-    onReplaceEvents(normalize(addCustomEvent(events)));
   };
 
   const removeCustom = (id: string) => {
@@ -673,7 +688,9 @@ function EventsEditor({
           readOnly={readOnly}
           allEvents={events}
           pixelUrlResolveBase={pixelUrlResolveBase}
+          pixelMethodRecommendation={pixelMethodRecommendation}
           onPatch={(p) => patchEvent(ev.id, p)}
+          ownershipRow={ownershipRowByEventId?.[ev.id]}
         />
       ))}
       {customs.map((ev) => (
@@ -684,39 +701,27 @@ function EventsEditor({
           readOnly={readOnly}
           allEvents={events}
           pixelUrlResolveBase={pixelUrlResolveBase}
+          pixelMethodRecommendation={pixelMethodRecommendation}
           onPatch={(p) => patchEvent(ev.id, p)}
           onRemove={() => removeCustom(ev.id)}
         />
       ))}
-      <div className="space-y-1">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="w-full border-[color:var(--figma-primary-main)] text-[color:var(--figma-primary-main)] shadow-sm hover:bg-[color:var(--figma-primary-main)]/10 hover:text-[color:var(--figma-primary-main)]"
-          disabled={readOnly || atCap}
-          onClick={addCustom}
-        >
-          + Add custom conversion
-        </Button>
-        {atCap ? (
-          <p className="text-xs text-[color:var(--figma-gray-text-03)]">
-            Maximum 5 custom events reached for this client setup.
-          </p>
-        ) : null}
-      </div>
     </div>
   );
 }
 
-export function CareerSiteEventsSection(props: {
-  events: TrackingEvent[];
-  architecture: Architecture;
-  readOnly?: boolean;
-  globalCustomCount: number;
-  onReplaceEvents: (next: TrackingEvent[]) => void;
-  pixelUrlResolveBase?: string;
-}) {
+export function CareerSiteEventsSection(
+  props: {
+    events: TrackingEvent[];
+    architecture: Architecture;
+    readOnly?: boolean;
+    onReplaceEvents: (next: TrackingEvent[]) => void;
+    pixelUrlResolveBase?: string;
+    /** Omitted for career catalog: no per-vendor REC. */
+    pixelMethodRecommendation?: "js" | "image";
+    ownershipRowByEventId?: Partial<Record<string, CareerRowOwnershipMeta>>;
+  },
+) {
   const normalize = React.useCallback(
     (ev: TrackingEvent[]) => normalizeCareerEventsOrder(ev, props.architecture),
     [props.architecture],
@@ -724,14 +729,17 @@ export function CareerSiteEventsSection(props: {
   return <EventsEditor {...props} normalize={normalize} />;
 }
 
-export function AtsEventsSection(props: {
-  events: TrackingEvent[];
-  architecture: Architecture;
-  readOnly?: boolean;
-  globalCustomCount: number;
-  onReplaceEvents: (next: TrackingEvent[]) => void;
-  pixelUrlResolveBase?: string;
-}) {
+export function AtsEventsSection(
+  props: {
+    events: TrackingEvent[];
+    architecture: Architecture;
+    readOnly?: boolean;
+    onReplaceEvents: (next: TrackingEvent[]) => void;
+    pixelUrlResolveBase?: string;
+    pixelMethodRecommendation?: "js" | "image";
+    ownershipRowByEventId?: Partial<Record<string, CareerRowOwnershipMeta>>;
+  },
+) {
   const normalize = React.useCallback(
     (ev: TrackingEvent[]) => normalizeAtsEventsOrder(ev, props.architecture),
     [props.architecture],

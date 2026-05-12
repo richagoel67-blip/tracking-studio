@@ -10,8 +10,10 @@ export const Route = createFileRoute("/installation-guide")({
 function InstallationGuidePage() {
   return (
     <AppShell>
-      <div className="min-h-full bg-[color:var(--figma-gray-bg-04)] px-6 py-8">
-        <InstallationGuideView />
+      <div className="min-h-full bg-[color:var(--figma-gray-bg-04)]">
+        <div className="mx-auto max-w-[1148px] p-6">
+          <InstallationGuideView />
+        </div>
       </div>
     </AppShell>
   );
